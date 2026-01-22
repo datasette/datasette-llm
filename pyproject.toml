@@ -1,0 +1,48 @@
+[project]
+name = "datasette-llm"
+version = "0.1"
+description = "LLM integration for Datasette"
+readme = "README.md"
+authors = [{name = "Simon Willison"}]
+license = "Apache-2.0"
+classifiers=[
+    "Framework :: Datasette"
+]
+requires-python = ">=3.10"
+dependencies = [
+    "datasette>=1.0a23",
+    "llm>=0.26a0",
+    "datasette-secrets"
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "llm-echo"
+]
+
+[tool.uv.sources]
+datasette-secrets = { path = "../datasette-secrets", editable = true }
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+
+[project.urls]
+Homepage = "https://github.com/datasette/datasette-llm"
+Changelog = "https://github.com/datasette/datasette-llm/releases"
+Issues = "https://github.com/datasette/datasette-llm/issues"
+CI = "https://github.com/datasette/datasette-llm/actions"
+
+[project.entry-points.datasette]
+llm = "datasette_llm"
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.setuptools.package-data]
+datasette_llm = ["static/*", "templates/*"]
+
