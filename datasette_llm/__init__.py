@@ -435,11 +435,25 @@ class LLM:
 
         # Filter to models with keys (if configured, default True)
         if config.get("require_keys", True):
-            available = []
-            for model in all_models:
-                if await self.model_has_key(model, actor):
-                    available.append(model)
-            all_models = available
+            # Deduplicate key lookups - many models share the same key
+            unique_keys = {
+                model.needs_key for model in all_models if model.needs_key is not None
+            }
+            key_available = {}
+            # Pick one representative model per unique key
+            key_to_model = {}
+            for m in all_models:
+                if m.needs_key and m.needs_key not in key_to_model:
+                    key_to_model[m.needs_key] = m
+            for needs_key in unique_keys:
+                key_available[needs_key] = await self.model_has_key(
+                    key_to_model[needs_key], actor
+                )
+            all_models = [
+                m
+                for m in all_models
+                if m.needs_key is None or key_available.get(m.needs_key, False)
+            ]
 
         # Apply hook filters (may be async)
         for result in pm.hook.llm_filter_models(
