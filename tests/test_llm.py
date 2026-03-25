@@ -67,6 +67,7 @@ async def test_llm_prompt_context_hook():
                     }
                 )
                 yield
+
                 # After the prompt - register on_done for usage tracking
                 async def on_complete(response):
                     hook_calls.append(
@@ -519,6 +520,87 @@ async def test_llm_default_model_hook():
         assert model.model_id == "echo"
     finally:
         pm.unregister(plugin)
+
+
+def test_register_llm_purposes():
+    """Test that plugins can register purposes via the hook."""
+    from datasette_llm import Purpose, get_purposes
+
+    class PurposePlugin:
+        __name__ = "purpose_plugin"
+
+        @hookimpl
+        def register_llm_purposes(self, datasette):
+            return [
+                Purpose(
+                    name="query-assistant",
+                    description="Assists users with writing SQL queries",
+                ),
+                Purpose(
+                    name="enrichments",
+                    description="Enriches data with LLM-generated content",
+                ),
+            ]
+
+    plugin = PurposePlugin()
+    pm.register(plugin)
+    try:
+        datasette = Datasette(memory=True)
+        purposes = get_purposes(datasette)
+
+        assert len(purposes) == 2
+        assert purposes[0].name == "query-assistant"
+        assert purposes[0].description == "Assists users with writing SQL queries"
+        assert purposes[1].name == "enrichments"
+        assert purposes[1].description == "Enriches data with LLM-generated content"
+    finally:
+        pm.unregister(plugin)
+
+
+def test_register_llm_purposes_deduplication():
+    """Test that duplicate purpose names are deduplicated (first wins)."""
+    from datasette_llm import Purpose, get_purposes
+
+    class Plugin1:
+        __name__ = "purpose_plugin1"
+
+        @hookimpl
+        def register_llm_purposes(self, datasette):
+            return [
+                Purpose(name="enrichments", description="First plugin's enrichments"),
+            ]
+
+    class Plugin2:
+        __name__ = "purpose_plugin2"
+
+        @hookimpl
+        def register_llm_purposes(self, datasette):
+            return [
+                Purpose(name="enrichments", description="Second plugin's enrichments"),
+            ]
+
+    plugin1 = Plugin1()
+    plugin2 = Plugin2()
+    pm.register(plugin1)
+    pm.register(plugin2)
+    try:
+        datasette = Datasette(memory=True)
+        purposes = get_purposes(datasette)
+
+        enrichments = [p for p in purposes if p.name == "enrichments"]
+        assert len(enrichments) == 1
+    finally:
+        pm.unregister(plugin1)
+        pm.unregister(plugin2)
+
+
+def test_register_llm_purposes_no_plugins():
+    """Test that get_purposes returns empty list when no plugins register purposes."""
+    from datasette_llm import get_purposes
+
+    datasette = Datasette(memory=True)
+    purposes = get_purposes(datasette)
+    assert purposes == []
 
 
 @pytest.mark.asyncio

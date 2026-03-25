@@ -228,6 +228,40 @@ def llm_group_exit(datasette, group):
     return cleanup()
 ```
 
+### `register_llm_purposes`
+
+Register purpose strings that your plugin uses, along with documentation explaining what they mean.
+
+```python
+from datasette import hookimpl
+from datasette_llm import Purpose
+
+@hookimpl
+def register_llm_purposes(datasette):
+    return [
+        Purpose(
+            name="query-assistant",
+            description="Assists users with writing SQL queries",
+        ),
+        Purpose(
+            name="suggest-table-names",
+            description="Suggests names for tables based on imported CSV files",
+        ),
+    ]
+```
+
+Registered purposes can be retrieved by other plugins (e.g., to build an admin UI for model assignment):
+
+```python
+from datasette_llm import get_purposes
+
+purposes = get_purposes(datasette)
+for purpose in purposes:
+    print(f"{purpose.name}: {purpose.description}")
+```
+
+If multiple plugins register the same purpose name, the first registration wins.
+
 ### `llm_filter_models`
 
 Influence the models that are returned from the `await llm.models()` method. Plugins can use this to add custom logic informing which models are available, taking into account both the actor and the purpose of the prompt.

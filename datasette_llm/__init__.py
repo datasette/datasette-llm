@@ -31,6 +31,43 @@ KEY_OBTAIN_URLS = {
 }
 
 
+@dataclass
+class Purpose:
+    """
+    Describes a purpose that a plugin uses for LLM prompts.
+
+    Purposes help administrators understand what LLM operations are
+    available and configure which model should serve each one.
+
+    Attributes:
+        name: Unique identifier for this purpose (e.g., "query-assistant", "enrichments")
+        description: Human-readable description of what this purpose does
+    """
+
+    name: str
+    description: Optional[str] = None
+
+
+def get_purposes(datasette) -> List[Purpose]:
+    """
+    Collect all registered purposes from plugins.
+
+    Deduplicates by name (first registration wins).
+
+    Returns:
+        List of Purpose instances
+    """
+    purposes = []
+    seen = set()
+    for result in pm.hook.register_llm_purposes(datasette=datasette):
+        for purpose in result:
+            if purpose.name in seen:
+                continue
+            seen.add(purpose.name)
+            purposes.append(purpose)
+    return purposes
+
+
 class ModelNotFoundError(Exception):
     """Raised when a requested model is not available."""
 
@@ -489,5 +526,7 @@ __all__ = [
     "WrappedConversation",
     "PromptResult",
     "Group",
+    "Purpose",
     "ModelNotFoundError",
+    "get_purposes",
 ]

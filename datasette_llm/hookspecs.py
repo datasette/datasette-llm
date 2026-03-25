@@ -8,6 +8,21 @@ hookspec = HookspecMarker("datasette")
 
 
 @hookspec
+def register_llm_purposes(datasette):
+    """
+    Return a list of Purpose instances describing what purposes this plugin uses.
+
+    Purposes help administrators configure which LLM model should serve
+    each purpose. Plugins register purposes they will use, and administrators
+    can then assign models to those purposes via configuration.
+
+    Returns:
+        List of Purpose instances
+    """
+    pass
+
+
+@hookspec
 def llm_filter_models(datasette, models, actor, purpose):
     """
     Filter the list of available models.
