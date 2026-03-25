@@ -42,26 +42,27 @@ Configure the plugin in your `datasette.yaml`:
 plugins:
   datasette-llm:
     # Default model when none specified
-    default_model: gpt-4o-mini
+    default_model: gpt-5.4-mini
 
     # Purpose-specific model defaults
     purposes:
       enrichments:
-        model: gpt-4o-mini      # Cheap for bulk operations
+        model: gpt-5.4-nano      # Cheap for bulk operations
       sql-assistant:
-        model: gpt-4o           # Smarter for complex queries
+        model: gpt-5.4           # Smarter for complex queries
       chat:
-        model: claude-3-5-sonnet
+        model: claude-sonnet-4.6
 
     # Model availability (optional)
     models:                      # Allowlist - only these models available
-      - gpt-4o-mini
-      - gpt-4o
-      - claude-3-5-sonnet
+      - gpt-5.4
+      - gpt-5.4-mini
+      - gpt-5.4-nano
+      - claude-sonnet-4.6
 
     # Or use a blocklist instead
     blocked_models:
-      - o1-preview              # Too expensive
+      - gpt-5.4-pro              # Too expensive
 
     # Only show models with API keys configured (default: true)
     require_keys: true
@@ -103,7 +104,7 @@ async def my_plugin_view(datasette, request):
     model = await llm.model()
 
     # Or specify a model explicitly
-    model = await llm.model("gpt-4o-mini")
+    model = await llm.model("gpt-5.4-mini")
 
     # Execute a prompt
     response = await model.prompt("What is the capital of France?")
@@ -122,13 +123,13 @@ Specify a `purpose` to:
 model = await llm.model(purpose="sql-assistant")
 
 # Or with explicit model (purpose still tracked)
-model = await llm.model("gpt-4o", purpose="sql-assistant")
+model = await llm.model("gpt-5.4", purpose="sql-assistant")
 ```
 
 ### Streaming responses
 
 ```python
-model = await llm.model("gpt-4o-mini")
+model = await llm.model("gpt-5.4-mini")
 response = await model.prompt("Tell me a story")
 
 # Non-streaming - wait for complete response
@@ -236,7 +237,7 @@ Filter the list of available models:
 async def llm_filter_models(datasette, models, actor, purpose):
     if not actor:
         # Anonymous users get limited models
-        return [m for m in models if m.model_id == "gpt-4o-mini"]
+        return [m for m in models if m.model_id == "gpt-5.4-mini"]
 
     # Check database for user's allowed models
     db = datasette.get_database()

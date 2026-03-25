@@ -349,7 +349,7 @@ class LLM:
         Get an async model wrapped with hook support.
 
         Args:
-            model_id: The model ID (e.g., "gpt-4o-mini", "echo"). If not provided,
+            model_id: The model ID (e.g., "gpt-5.4-mini", "echo"). If not provided,
                       uses the default model from configuration.
             purpose: Optional string identifying what this model will be used for
                      (e.g., "enrichments", "sql-assistant"). Used for auditing,
@@ -436,7 +436,7 @@ class LLM:
         - All responses are forced to complete on exit (transactional semantics)
 
         Args:
-            model_id: The model ID (e.g., "gpt-4o-mini", "echo"). If not provided,
+            model_id: The model ID (e.g., "gpt-5.4-mini", "echo"). If not provided,
                       uses the default model from configuration.
             purpose: String identifying what this group is for (e.g., "enrichments")
             actor: Optional actor dict for per-user key resolution

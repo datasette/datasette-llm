@@ -60,7 +60,7 @@ def llm_prompt_context(datasette, model_id, prompt, purpose):
 
     Args:
         datasette: The Datasette instance
-        model_id: The ID of the model being used (e.g., "gpt-4o-mini", "echo")
+        model_id: The ID of the model being used (e.g., "gpt-5.4-mini", "echo")
         prompt: The prompt text being sent
         purpose: Optional string identifying what this prompt is for
                  (e.g., "enrichments", "sql-assistant")
