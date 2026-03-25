@@ -1,6 +1,6 @@
 [project]
 name = "datasette-llm"
-version = "0.1a0"
+version = "0.1a1"
 description = "LLM integration for Datasette"
 readme = "README.md"
 authors = [{name = "Simon Willison"}]
@@ -45,4 +45,3 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.setuptools.package-data]
 datasette_llm = ["static/*", "templates/*"]
-
