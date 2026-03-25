@@ -20,7 +20,10 @@ if TYPE_CHECKING:
 # URLs for obtaining API keys for common providers
 KEY_OBTAIN_URLS = {
     "openai": ("https://platform.openai.com/api-keys", "Get an OpenAI API key"),
-    "anthropic": ("https://console.anthropic.com/settings/keys", "Get an Anthropic API key"),
+    "anthropic": (
+        "https://console.anthropic.com/settings/keys",
+        "Get an Anthropic API key",
+    ),
     "google": ("https://aistudio.google.com/app/apikey", "Get a Google AI API key"),
     "groq": ("https://console.groq.com/keys", "Get a Groq API key"),
     "mistral": ("https://console.mistral.ai/api-keys/", "Get a Mistral API key"),
@@ -133,7 +136,9 @@ class WrappedConversation:
                     await stack.enter_async_context(ctx)
 
             # Execute the actual conversation prompt, passing the resolved key
-            response = await self._conversation.prompt(prompt_text, key=self._key, **kwargs)
+            response = await self._conversation.prompt(
+                prompt_text, key=self._key, **kwargs
+            )
 
             # Populate result so context managers can access it on exit
             result.response = response
@@ -274,13 +279,9 @@ class LLM:
             return key
 
         # 2. Fall back to llm's key resolution
-        return llm_library.get_key(
-            key_alias=model.needs_key, env_var=model.key_env_var
-        )
+        return llm_library.get_key(key_alias=model.needs_key, env_var=model.key_env_var)
 
-    async def model_has_key(
-        self, model, actor: Optional[dict] = None
-    ) -> bool:
+    async def model_has_key(self, model, actor: Optional[dict] = None) -> bool:
         """Check if a model has a usable API key configured."""
         if model.needs_key is None:
             return True  # Model doesn't need a key
@@ -365,9 +366,7 @@ class LLM:
         # Resolve the API key for this model
         key = await self.get_key_for_model(model, actor)
 
-        return WrappedAsyncModel(
-            model, self._datasette, purpose=purpose, key=key
-        )
+        return WrappedAsyncModel(model, self._datasette, purpose=purpose, key=key)
 
     async def models(
         self,
@@ -478,9 +477,7 @@ class LLM:
 
             # Notify hooks that the group is exiting (for settlement, cleanup, etc.)
             # Hooks may return coroutines for async cleanup - await them
-            results = pm.hook.llm_group_exit(
-                datasette=self._datasette, group=group_obj
-            )
+            results = pm.hook.llm_group_exit(datasette=self._datasette, group=group_obj)
             for result in results:
                 if asyncio.iscoroutine(result):
                     await result
