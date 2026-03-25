@@ -230,7 +230,13 @@ def llm_group_exit(datasette, group):
 
 ### `llm_filter_models`
 
-Filter the list of available models:
+Influence the models that are returned from the `await llm.models()` method. Plugins can use this to add custom logic informing which models are available, taking into account both the actor and the purpose of the prompt.
+
+- `models` is a list of available model objects from all of the installed [LLM plugins](https://llm.datasette.io/en/stable/plugins/directory.html).
+- `actor` is an actor dictionary or `None`
+- `purpose` is a purpose string or `None`
+
+The `actor` and `purpose` are the ones that were passed to the `llm.models(actor=..., purpose=...)` method.
 
 ```python
 @hookimpl
@@ -251,7 +257,7 @@ async def llm_filter_models(datasette, models, actor, purpose):
 
 ### `llm_default_model`
 
-Provide dynamic default model selection:
+This plugin hook is used when `await llm.model()` is called without any arguments - or with a `purpose` and/or `actor` specified. Plugins can use this to control which default model is used, including for a given purpose.
 
 ```python
 @hookimpl
