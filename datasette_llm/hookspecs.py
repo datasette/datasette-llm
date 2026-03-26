@@ -63,7 +63,7 @@ def llm_default_model(datasette, purpose, actor):
 
 
 @hookspec
-def llm_prompt_context(datasette, model_id, prompt, purpose):
+def llm_prompt_context(datasette, model_id, prompt, purpose, actor):
     """
     Return an async context manager factory to wrap LLM prompt execution.
 
@@ -79,6 +79,7 @@ def llm_prompt_context(datasette, model_id, prompt, purpose):
         prompt: The prompt text being sent
         purpose: Optional string identifying what this prompt is for
                  (e.g., "enrichments", "sql-assistant")
+        actor: Optional actor dict identifying who is making the request
 
     Returns:
         A callable that takes a PromptResult and returns an async context manager,
@@ -91,7 +92,7 @@ def llm_prompt_context(datasette, model_id, prompt, purpose):
 
     Example:
         @hookimpl
-        def llm_prompt_context(datasette, model_id, prompt, purpose):
+        def llm_prompt_context(datasette, model_id, prompt, purpose, actor):
             @asynccontextmanager
             async def wrapper(result):
                 # Before the prompt executes
