@@ -142,6 +142,7 @@ class WrappedConversation:
         purpose: Optional[str] = None,
         group: Optional[Group] = None,
         key: Optional[str] = None,
+        actor: Optional[dict] = None,
     ):
         self._conversation = conversation
         self._datasette = datasette
@@ -149,6 +150,7 @@ class WrappedConversation:
         self._purpose = purpose
         self._group = group
         self._key = key
+        self._actor = actor
 
     async def prompt(self, prompt_text: str, **kwargs) -> llm_library.AsyncResponse:
         """
@@ -160,6 +162,7 @@ class WrappedConversation:
             model_id=self._model_id,
             prompt=prompt_text,
             purpose=self._purpose,
+            actor=self._actor,
         )
 
         # Create result object that will be populated after the prompt
@@ -199,12 +202,14 @@ class WrappedAsyncModel:
         purpose: Optional[str] = None,
         group: Optional[Group] = None,
         key: Optional[str] = None,
+        actor: Optional[dict] = None,
     ):
         self._model = model
         self._datasette = datasette
         self._purpose = purpose
         self._group = group
         self._key = key
+        self._actor = actor
 
     @property
     def model_id(self) -> str:
@@ -227,6 +232,7 @@ class WrappedAsyncModel:
             purpose=self._purpose,
             group=self._group,
             key=self._key,
+            actor=self._actor,
         )
 
     async def prompt(self, prompt_text: str, **kwargs) -> llm_library.AsyncResponse:
@@ -245,6 +251,7 @@ class WrappedAsyncModel:
             model_id=self._model.model_id,
             prompt=prompt_text,
             purpose=self._purpose,
+            actor=self._actor,
         )
 
         # Create result object that will be populated after the prompt
@@ -403,7 +410,7 @@ class LLM:
         # Resolve the API key for this model
         key = await self.get_key_for_model(model, actor)
 
-        return WrappedAsyncModel(model, self._datasette, purpose=purpose, key=key)
+        return WrappedAsyncModel(model, self._datasette, purpose=purpose, key=key, actor=actor)
 
     async def models(
         self,
@@ -512,7 +519,7 @@ class LLM:
         key = await self.get_key_for_model(model, actor)
 
         wrapped = WrappedAsyncModel(
-            model, self._datasette, purpose=purpose, group=group_obj, key=key
+            model, self._datasette, purpose=purpose, group=group_obj, key=key, actor=actor
         )
 
         try:

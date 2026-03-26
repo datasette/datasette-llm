@@ -195,11 +195,12 @@ from datasette import hookimpl
 from contextlib import asynccontextmanager
 
 @hookimpl
-def llm_prompt_context(datasette, model_id, prompt, purpose):
+def llm_prompt_context(datasette, model_id, prompt, purpose, actor):
     @asynccontextmanager
     async def wrapper(result):
         # Before the prompt executes
-        print(f"Starting prompt to {model_id}")
+        actor_id = actor.get("id") if actor else None
+        print(f"Starting prompt to {model_id} by {actor_id}")
 
         yield
 
