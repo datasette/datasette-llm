@@ -22,9 +22,6 @@ dev = [
     "llm-echo"
 ]
 
-[tool.uv.sources]
-datasette-secrets = { path = "../datasette-secrets", editable = true }
-
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"

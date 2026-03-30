@@ -44,29 +44,50 @@ plugins:
     # Default model when none specified
     default_model: gpt-5.4-mini
 
-    # Purpose-specific model defaults
+    # Purpose-specific configuration
     purposes:
       enrichments:
-        model: gpt-5.4-nano      # Cheap for bulk operations
+        model: gpt-5.4-nano      # Default model for bulk operations
       sql-assistant:
         model: gpt-5.4           # Smarter for complex queries
+        models:                  # Only these models for SQL assistance
+        - gpt-5.4
+        - gpt-5.4-mini
+      extract:
+        model: claude-sonnet-4.6
+        blocked_models:          # Block specific models for extraction
+        - gpt-5.4-pro
       chat:
         model: claude-sonnet-4.6
 
     # Model availability (optional)
     models:                      # Allowlist - only these models available
-      - gpt-5.4
-      - gpt-5.4-mini
-      - gpt-5.4-nano
-      - claude-sonnet-4.6
+    - gpt-5.4
+    - gpt-5.4-mini
+    - gpt-5.4-nano
+    - claude-sonnet-4.6
 
     # Or use a blocklist instead
     blocked_models:
-      - gpt-5.4-pro              # Too expensive
+    - gpt-5.4-pro                # Too expensive
 
     # Only show models with API keys configured (default: true)
     require_keys: true
 ```
+
+### Model filtering
+
+The `models` and `blocked_models` keys control which models are available. Use `models` to define an allowlist (only these models will be available) or `blocked_models` to define a blocklist (all models except these will be available). If both are set, the allowlist is applied first and the blocklist removes from the result.
+
+### Purpose-specific configuration
+
+Plugins register **purposes** to describe what they use LLM models for (e.g. `"extract"`, `"enrichments"`, `"sql-assistant"`). Each purpose can have its own configuration under `purposes.<name>`:
+
+- **`model`**: The default model for this purpose, used when a plugin calls `await llm.model(purpose="extract")` without specifying a model ID.
+- **`models`**: An allowlist of models for this purpose. When set, this **overrides** the global `models` allowlist — so a model can be available for a specific purpose even if it is not in the global list. This filtering is applied when a plugin calls `await llm.models(purpose="extract")`.
+- **`blocked_models`**: A blocklist of models for this purpose. These are removed even if the model is globally allowed.
+
+When no purpose-specific `models` list is set, the global `models` allowlist applies. The global `blocked_models` always applies regardless of purpose configuration.
 
 ## API Key Management
 
@@ -178,7 +199,7 @@ for model in models:
 # Filter by actor (for per-user permissions)
 models = await llm.models(actor=request.actor)
 
-# Filter by purpose
+# Filter by purpose (applies purpose-specific models/blocked_models config)
 models = await llm.models(purpose="enrichments")
 ```
 

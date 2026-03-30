@@ -629,3 +629,337 @@ async def test_llm_default_model_hook_async():
         assert model.model_id == "echo"
     finally:
         pm.unregister(plugin)
+
+
+@pytest.mark.asyncio
+async def test_purpose_specific_models_filter():
+    """Test that purposes can define an allowed models list."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "purposes": {
+                        "extract": {
+                            "models": ["echo"],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # Without purpose, should return all models
+    all_models = await llm.models()
+    all_ids = [m.model_id for m in all_models]
+    assert len(all_ids) > 1
+
+    # With purpose, should only return echo
+    filtered = await llm.models(purpose="extract")
+    filtered_ids = [m.model_id for m in filtered]
+    assert filtered_ids == ["echo"]
+
+
+@pytest.mark.asyncio
+async def test_purpose_specific_blocked_models():
+    """Test that purposes can define a blocked models list."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "purposes": {
+                        "extract": {
+                            "blocked_models": ["echo"],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # Without purpose, echo should be present
+    all_models = await llm.models()
+    assert "echo" in [m.model_id for m in all_models]
+
+    # With purpose, echo should be blocked
+    filtered = await llm.models(purpose="extract")
+    assert "echo" not in [m.model_id for m in filtered]
+
+
+@pytest.mark.asyncio
+async def test_purpose_models_overrides_global_models():
+    """Test that a purpose allowlist can include models not in the global allowlist."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["gpt-4o"],  # Global: only gpt-4o
+                    "purposes": {
+                        "extract": {
+                            "models": ["echo"],  # Purpose: only echo
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # Without purpose, only gpt-4o available
+    global_models = await llm.models()
+    global_ids = [m.model_id for m in global_models]
+    assert "gpt-4o" in global_ids
+    assert "echo" not in global_ids
+
+    # With purpose, echo is available even though it's not in global list
+    purpose_models = await llm.models(purpose="extract")
+    purpose_ids = [m.model_id for m in purpose_models]
+    assert "echo" in purpose_ids
+
+
+@pytest.mark.asyncio
+async def test_purpose_blocked_models_overrides_global():
+    """Test that a purpose can block a model that is globally allowed."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["echo", "gpt-4o"],  # Both globally allowed
+                    "purposes": {
+                        "extract": {
+                            "blocked_models": ["echo"],  # Block echo for this purpose
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # Without purpose, echo is available
+    global_models = await llm.models()
+    global_ids = [m.model_id for m in global_models]
+    assert "echo" in global_ids
+
+    # With purpose, echo is blocked
+    purpose_models = await llm.models(purpose="extract")
+    purpose_ids = [m.model_id for m in purpose_models]
+    assert "echo" not in purpose_ids
+    assert "gpt-4o" in purpose_ids
+
+
+# Ordering tests
+
+
+@pytest.mark.asyncio
+async def test_global_models_order_matches_config():
+    """Models should be returned in the order listed in the global models config."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["gpt-4o-mini", "echo", "gpt-4o"],
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_ids = [m.model_id for m in await llm.models()]
+    assert model_ids == ["gpt-4o-mini", "echo", "gpt-4o"]
+
+
+@pytest.mark.asyncio
+async def test_default_model_is_first():
+    """The default model should be promoted to the top of the list."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["gpt-4o-mini", "echo", "gpt-4o"],
+                    "default_model": "gpt-4o",
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_ids = [m.model_id for m in await llm.models()]
+    # gpt-4o promoted to first, rest in config order
+    assert model_ids == ["gpt-4o", "gpt-4o-mini", "echo"]
+
+
+@pytest.mark.asyncio
+async def test_purpose_default_model_is_first():
+    """The purpose-specific default model should be promoted to the top."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["gpt-4o-mini", "echo", "gpt-4o"],
+                    "purposes": {
+                        "extract": {
+                            "model": "echo",
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_ids = [m.model_id for m in await llm.models(purpose="extract")]
+    # echo promoted to first, rest in global config order
+    assert model_ids == ["echo", "gpt-4o-mini", "gpt-4o"]
+
+
+@pytest.mark.asyncio
+async def test_purpose_models_order_then_global_order():
+    """
+    Purpose models come first in their config order,
+    then remaining global models in their config order.
+    """
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["gpt-4o", "gpt-4o-mini", "echo", "gpt-4.1", "gpt-4.1-mini"],
+                    "purposes": {
+                        "extract": {
+                            "models": ["echo", "gpt-4.1-mini"],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_ids = [m.model_id for m in await llm.models(purpose="extract")]
+    # Purpose models first (echo, gpt-4.1-mini), then remaining global
+    # models in their global order (gpt-4o, gpt-4o-mini, gpt-4.1)
+    assert model_ids == ["echo", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4.1"]
+
+
+@pytest.mark.asyncio
+async def test_purpose_models_order_with_default():
+    """
+    Default model first, then remaining purpose models in config order,
+    then remaining global models in global config order.
+    """
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["gpt-4o", "gpt-4o-mini", "echo", "gpt-4.1", "gpt-4.1-mini"],
+                    "purposes": {
+                        "extract": {
+                            "model": "gpt-4.1-mini",
+                            "models": ["echo", "gpt-4.1-mini"],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_ids = [m.model_id for m in await llm.models(purpose="extract")]
+    # Default (gpt-4.1-mini) first, then remaining purpose models (echo),
+    # then remaining global models in global order (gpt-4o, gpt-4o-mini, gpt-4.1)
+    assert model_ids == ["gpt-4.1-mini", "echo", "gpt-4o", "gpt-4o-mini", "gpt-4.1"]
+
+
+@pytest.mark.asyncio
+async def test_purpose_models_order_with_blocked():
+    """
+    Blocked models are removed from the final ordered list.
+    """
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["gpt-4o", "gpt-4o-mini", "echo", "gpt-4.1", "gpt-4.1-mini"],
+                    "purposes": {
+                        "extract": {
+                            "model": "gpt-4.1-mini",
+                            "models": ["echo", "gpt-4.1-mini"],
+                            "blocked_models": ["gpt-4o"],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_ids = [m.model_id for m in await llm.models(purpose="extract")]
+    # Same as above but gpt-4o is blocked
+    assert model_ids == ["gpt-4.1-mini", "echo", "gpt-4o-mini", "gpt-4.1"]
+
+
+@pytest.mark.asyncio
+async def test_global_default_used_when_no_purpose_default():
+    """
+    When a purpose has no default model, the global default is promoted to top.
+    """
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "default_model": "echo",
+                    "models": ["gpt-4o", "gpt-4o-mini", "echo"],
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # Even with a purpose that has no specific default, global default goes first
+    model_ids = [m.model_id for m in await llm.models(purpose="anything")]
+    assert model_ids == ["echo", "gpt-4o", "gpt-4o-mini"]

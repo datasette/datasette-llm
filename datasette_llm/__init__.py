@@ -384,6 +384,61 @@ class LLM:
             "Either pass a model_id or configure default_model in datasette-llm settings."
         )
 
+    def _sort_models(self, models: List, config: dict, purpose: Optional[str]) -> List:
+        """
+        Sort models by priority:
+        1. Default model (purpose-specific or global) first
+        2. Purpose-specific models list in config order
+        3. Global models list in config order
+        4. Any remaining models in their original order
+
+        Models already produced by a higher-priority tier are skipped.
+        """
+        purpose_config = config.get("purposes", {}).get(purpose, {}) if purpose else {}
+        purpose_models_list = purpose_config.get("models")
+        global_models_list = config.get("models")
+
+        # Resolve default model ID: purpose-specific, then global
+        default_model_id = None
+        if purpose:
+            default_model_id = purpose_config.get("model")
+        if not default_model_id:
+            default_model_id = config.get("default_model")
+
+        # Build a lookup from model_id to model object
+        model_by_id = {m.model_id: m for m in models}
+        available_ids = set(model_by_id.keys())
+
+        result = []
+        seen = set()
+
+        def add(model_id):
+            if model_id in available_ids and model_id not in seen:
+                seen.add(model_id)
+                result.append(model_by_id[model_id])
+
+        # 1. Default model first
+        if default_model_id:
+            add(default_model_id)
+
+        # 2. Purpose-specific models in config order
+        if purpose_models_list:
+            for model_id in purpose_models_list:
+                add(model_id)
+
+        # 3. Global models in config order
+        if global_models_list:
+            for model_id in global_models_list:
+                add(model_id)
+
+        # 4. Any remaining models in original order
+        for m in models:
+            if m.model_id not in seen:
+                seen.add(m.model_id)
+                result.append(m)
+
+        return result
+
     async def model(
         self,
         model_id: Optional[str] = None,
@@ -410,7 +465,9 @@ class LLM:
         # Resolve the API key for this model
         key = await self.get_key_for_model(model, actor)
 
-        return WrappedAsyncModel(model, self._datasette, purpose=purpose, key=key, actor=actor)
+        return WrappedAsyncModel(
+            model, self._datasette, purpose=purpose, key=key, actor=actor
+        )
 
     async def models(
         self,
@@ -431,10 +488,24 @@ class LLM:
         all_models = list(llm_library.get_async_models())
         config = self._get_config()
 
-        # Apply static configuration filters
-        allowed = config.get("models")
-        if allowed:
-            all_models = [m for m in all_models if m.model_id in allowed]
+        # Apply model allowlists
+        if purpose:
+            purpose_config = config.get("purposes", {}).get(purpose, {})
+            purpose_allowed = purpose_config.get("models")
+            global_allowed = config.get("models")
+            if purpose_allowed or global_allowed:
+                # Union of purpose-specific and global allowlists
+                combined = set(purpose_allowed or []) | set(global_allowed or [])
+                all_models = [m for m in all_models if m.model_id in combined]
+            purpose_blocked = purpose_config.get("blocked_models")
+            if purpose_blocked:
+                all_models = [
+                    m for m in all_models if m.model_id not in purpose_blocked
+                ]
+        else:
+            allowed = config.get("models")
+            if allowed:
+                all_models = [m for m in all_models if m.model_id in allowed]
 
         blocked = config.get("blocked_models")
         if blocked:
@@ -474,6 +545,10 @@ class LLM:
                     result = await result
                 if result is not None:
                     all_models = result
+
+        # Sort models: default model first, then purpose-specific models
+        # in config order, then global models in config order
+        all_models = self._sort_models(all_models, config, purpose)
 
         return all_models
 
@@ -519,7 +594,12 @@ class LLM:
         key = await self.get_key_for_model(model, actor)
 
         wrapped = WrappedAsyncModel(
-            model, self._datasette, purpose=purpose, group=group_obj, key=key, actor=actor
+            model,
+            self._datasette,
+            purpose=purpose,
+            group=group_obj,
+            key=key,
+            actor=actor,
         )
 
         try:
