@@ -856,7 +856,13 @@ async def test_purpose_models_order_then_global_order():
             "plugins": {
                 "datasette-llm": {
                     "require_keys": False,
-                    "models": ["gpt-4o", "gpt-4o-mini", "echo", "gpt-4.1", "gpt-4.1-mini"],
+                    "models": [
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                        "echo",
+                        "gpt-4.1",
+                        "gpt-4.1-mini",
+                    ],
                     "purposes": {
                         "extract": {
                             "models": ["echo", "gpt-4.1-mini"],
@@ -888,7 +894,13 @@ async def test_purpose_models_order_with_default():
             "plugins": {
                 "datasette-llm": {
                     "require_keys": False,
-                    "models": ["gpt-4o", "gpt-4o-mini", "echo", "gpt-4.1", "gpt-4.1-mini"],
+                    "models": [
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                        "echo",
+                        "gpt-4.1",
+                        "gpt-4.1-mini",
+                    ],
                     "purposes": {
                         "extract": {
                             "model": "gpt-4.1-mini",
@@ -920,7 +932,13 @@ async def test_purpose_models_order_with_blocked():
             "plugins": {
                 "datasette-llm": {
                     "require_keys": False,
-                    "models": ["gpt-4o", "gpt-4o-mini", "echo", "gpt-4.1", "gpt-4.1-mini"],
+                    "models": [
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                        "echo",
+                        "gpt-4.1",
+                        "gpt-4.1-mini",
+                    ],
                     "purposes": {
                         "extract": {
                             "model": "gpt-4.1-mini",

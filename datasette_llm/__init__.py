@@ -99,6 +99,35 @@ def register_secrets():
     return secrets
 
 
+@hookimpl(tryfirst=True)
+def llm_filter_models(datasette, models, purpose):
+    """Apply config-based model filtering (allowlists and blocklists)."""
+    config = datasette.plugin_config("datasette-llm") or {}
+    if not config:
+        return
+
+    if purpose:
+        purpose_config = config.get("purposes", {}).get(purpose, {})
+        purpose_allowed = purpose_config.get("models")
+        global_allowed = config.get("models")
+        if purpose_allowed or global_allowed:
+            combined = set(purpose_allowed or []) | set(global_allowed or [])
+            models = [m for m in models if m.model_id in combined]
+        purpose_blocked = purpose_config.get("blocked_models")
+        if purpose_blocked:
+            models = [m for m in models if m.model_id not in purpose_blocked]
+    else:
+        allowed = config.get("models")
+        if allowed:
+            models = [m for m in models if m.model_id in allowed]
+
+    blocked = config.get("blocked_models")
+    if blocked:
+        models = [m for m in models if m.model_id not in blocked]
+
+    return models
+
+
 @dataclass
 class Group:
     """
@@ -487,29 +516,6 @@ class LLM:
         # Start with all async models from llm library
         all_models = list(llm_library.get_async_models())
         config = self._get_config()
-
-        # Apply model allowlists
-        if purpose:
-            purpose_config = config.get("purposes", {}).get(purpose, {})
-            purpose_allowed = purpose_config.get("models")
-            global_allowed = config.get("models")
-            if purpose_allowed or global_allowed:
-                # Union of purpose-specific and global allowlists
-                combined = set(purpose_allowed or []) | set(global_allowed or [])
-                all_models = [m for m in all_models if m.model_id in combined]
-            purpose_blocked = purpose_config.get("blocked_models")
-            if purpose_blocked:
-                all_models = [
-                    m for m in all_models if m.model_id not in purpose_blocked
-                ]
-        else:
-            allowed = config.get("models")
-            if allowed:
-                all_models = [m for m in all_models if m.model_id in allowed]
-
-        blocked = config.get("blocked_models")
-        if blocked:
-            all_models = [m for m in all_models if m.model_id not in blocked]
 
         # Filter to models with keys (if configured, default True)
         if config.get("require_keys", True):
