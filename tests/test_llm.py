@@ -90,7 +90,7 @@ async def test_llm_prompt_context_hook():
         model = await llm.model("echo", purpose="test-purpose")
 
         response = await model.prompt("Test prompt")
-        text = await response.text()
+        await response.text()
 
         # Verify hook was called
         assert len(hook_calls) == 2
@@ -981,3 +981,448 @@ async def test_global_default_used_when_no_purpose_default():
     # Even with a purpose that has no specific default, global default goes first
     model_ids = [m.model_id for m in await llm.models(purpose="anything")]
     assert model_ids == ["echo", "gpt-4o", "gpt-4o-mini"]
+
+
+# Model reference with key tests
+
+
+@pytest.mark.asyncio
+async def test_purpose_model_dict_with_key(monkeypatch):
+    """Test that purpose model can be a dict with model and key, and the key is used."""
+    from datasette_llm import LLM
+    import json
+
+    monkeypatch.setenv("DATASETTE_SECRETS_QUERY_ASSISTANT_KEY", "sk-qa-test-1234")
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "purposes": {
+                        "query-assistant": {
+                            "model": {
+                                "model": "echo-needs-key",
+                                "key": "QUERY_ASSISTANT_KEY",
+                            },
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model = await llm.model(purpose="query-assistant")
+    assert model.model_id == "echo-needs-key"
+    assert model._key == "sk-qa-test-1234"
+
+    # Verify the key is actually passed through to the model
+    response = await model.prompt("Hello")
+    data = json.loads(await response.text())
+    assert data["key"] == "sk-qa-test-1234"
+
+
+@pytest.mark.asyncio
+async def test_purpose_models_list_dict_with_key(monkeypatch):
+    """Test that purpose models list entries can be dicts with model and key."""
+    from datasette_llm import LLM
+    import json
+
+    monkeypatch.setenv("DATASETTE_SECRETS_ENRICHMENTS_KEY", "sk-enrich-test-5678")
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "purposes": {
+                        "enrichments": {
+                            "model": "echo",
+                            "models": [
+                                {"model": "echo-needs-key", "key": "ENRICHMENTS_KEY"},
+                                "echo",
+                            ],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model = await llm.model("echo-needs-key", purpose="enrichments")
+    assert model._key == "sk-enrich-test-5678"
+
+    response = await model.prompt("Hello")
+    data = json.loads(await response.text())
+    assert data["key"] == "sk-enrich-test-5678"
+
+
+@pytest.mark.asyncio
+async def test_default_model_dict_with_key(monkeypatch):
+    """Test that default_model can be a dict with model and key fields."""
+    from datasette_llm import LLM
+    import json
+
+    monkeypatch.setenv("DATASETTE_SECRETS_DEFAULT_CUSTOM_KEY", "sk-default-test-abcd")
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "default_model": {
+                        "model": "echo-needs-key",
+                        "key": "DEFAULT_CUSTOM_KEY",
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model = await llm.model()
+    assert model.model_id == "echo-needs-key"
+    assert model._key == "sk-default-test-abcd"
+
+    response = await model.prompt("Hello")
+    data = json.loads(await response.text())
+    assert data["key"] == "sk-default-test-abcd"
+
+
+@pytest.mark.asyncio
+async def test_purpose_key_overrides_default_key(monkeypatch):
+    """Test that purpose-specific key takes priority over default_model key."""
+    from datasette_llm import LLM
+    import json
+
+    monkeypatch.setenv("DATASETTE_SECRETS_DEFAULT_KEY", "sk-default-0000")
+    monkeypatch.setenv("DATASETTE_SECRETS_ENRICHMENTS_KEY", "sk-enrichments-1111")
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "default_model": {
+                        "model": "echo-needs-key",
+                        "key": "DEFAULT_KEY",
+                    },
+                    "purposes": {
+                        "enrichments": {
+                            "model": {
+                                "model": "echo-needs-key",
+                                "key": "ENRICHMENTS_KEY",
+                            },
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # Purpose-specific key wins
+    model = await llm.model(purpose="enrichments")
+    response = await model.prompt("Hello")
+    data = json.loads(await response.text())
+    assert data["key"] == "sk-enrichments-1111"
+
+    # Without purpose, default_model key is used
+    model2 = await llm.model()
+    response2 = await model2.prompt("Hello")
+    data2 = json.loads(await response2.text())
+    assert data2["key"] == "sk-default-0000"
+
+
+@pytest.mark.asyncio
+async def test_purpose_models_list_key_takes_priority_over_purpose_model_key(
+    monkeypatch,
+):
+    """Test that a key in the models list overrides the key in the purpose model default."""
+    from datasette_llm import LLM
+    import json
+
+    monkeypatch.setenv("DATASETTE_SECRETS_DEFAULT_ENRICHMENTS_KEY", "sk-default-enrich")
+    monkeypatch.setenv("DATASETTE_SECRETS_SPECIFIC_KEY", "sk-specific-enrich")
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "purposes": {
+                        "enrichments": {
+                            "model": {
+                                "model": "echo-needs-key",
+                                "key": "DEFAULT_ENRICHMENTS_KEY",
+                            },
+                            "models": [
+                                {"model": "echo-needs-key", "key": "SPECIFIC_KEY"},
+                            ],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # models list entry should win over purpose default model
+    model = await llm.model(purpose="enrichments")
+    response = await model.prompt("Hello")
+    data = json.loads(await response.text())
+    assert data["key"] == "sk-specific-enrich"
+
+
+@pytest.mark.asyncio
+async def test_same_provider_different_keys_in_models_list(monkeypatch):
+    """Test two models from the same provider can have different keys."""
+    from datasette_llm import LLM
+
+    monkeypatch.setenv("DATASETTE_SECRETS_KEY_A", "sk-key-a")
+    monkeypatch.setenv("DATASETTE_SECRETS_KEY_B", "sk-key-b")
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "purposes": {
+                        "enrichments": {
+                            "model": "echo",
+                            "models": [
+                                {"model": "gpt-4o", "key": "KEY_A"},
+                                {"model": "gpt-4o-mini", "key": "KEY_B"},
+                                "echo",
+                            ],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    assert llm._get_purpose_key_for_model("gpt-4o", "enrichments") == "KEY_A"
+    assert llm._get_purpose_key_for_model("gpt-4o-mini", "enrichments") == "KEY_B"
+    assert llm._get_purpose_key_for_model("echo", "enrichments") is None
+
+
+@pytest.mark.asyncio
+async def test_model_dict_no_key_field():
+    """Test that a model dict without key field works (just model name)."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "default_model": {
+                        "model": "echo",
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model = await llm.model()
+    assert model.model_id == "echo"
+    assert llm._get_purpose_key_for_model("echo", None) is None
+
+
+@pytest.mark.asyncio
+async def test_sort_models_with_dict_refs():
+    """Test that model sorting works when purpose config uses dict model refs."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["gpt-4o-mini", "echo", "gpt-4o"],
+                    "purposes": {
+                        "extract": {
+                            "model": {
+                                "model": "echo",
+                                "key": "EXTRACT_KEY",
+                            },
+                            "models": [
+                                {"model": "echo", "key": "EXTRACT_KEY"},
+                                "gpt-4o",
+                            ],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_ids = [m.model_id for m in await llm.models(purpose="extract")]
+    # echo promoted to first (purpose default), then gpt-4o (purpose models),
+    # then gpt-4o-mini (remaining global)
+    assert model_ids == ["echo", "gpt-4o", "gpt-4o-mini"]
+
+
+@pytest.mark.asyncio
+async def test_filter_models_with_dict_refs():
+    """Test that model filtering works when purpose models list has dict entries."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "purposes": {
+                        "extract": {
+                            "models": [
+                                {"model": "echo", "key": "EXTRACT_KEY"},
+                            ],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # With purpose, only echo should be available
+    filtered = await llm.models(purpose="extract")
+    filtered_ids = [m.model_id for m in filtered]
+    assert filtered_ids == ["echo"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_model_id_with_dict_default():
+    """Test that _resolve_model_id handles dict default_model."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "default_model": {
+                        "model": "echo-needs-key",
+                        "key": "CUSTOM_KEY",
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_id = await llm._resolve_model_id(None, None, None)
+    assert model_id == "echo-needs-key"
+
+
+@pytest.mark.asyncio
+async def test_resolve_model_id_with_dict_purpose_model():
+    """Test that _resolve_model_id handles dict purpose model."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "purposes": {
+                        "enrichments": {
+                            "model": {
+                                "model": "echo-needs-key",
+                                "key": "ENRICHMENTS_KEY",
+                            },
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    model_id = await llm._resolve_model_id(None, "enrichments", None)
+    assert model_id == "echo-needs-key"
+
+
+@pytest.mark.asyncio
+async def test_group_uses_purpose_key(monkeypatch):
+    """Test that group() resolves purpose-specific keys correctly."""
+    from datasette_llm import LLM
+    import json
+
+    monkeypatch.setenv("DATASETTE_SECRETS_GROUP_KEY", "sk-group-test-9999")
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "purposes": {
+                        "enrichments": {
+                            "model": {
+                                "model": "echo-needs-key",
+                                "key": "GROUP_KEY",
+                            },
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    async with llm.group(purpose="enrichments") as model:
+        assert model._key == "sk-group-test-9999"
+        response = await model.prompt("Test")
+        data = json.loads(await response.text())
+        assert data["key"] == "sk-group-test-9999"
+
+
+@pytest.mark.asyncio
+async def test_custom_key_secrets_auto_registered():
+    """Test that custom key names in config are auto-registered as datasette-secrets."""
+    from datasette_secrets import get_secret
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "default_model": {
+                        "model": "echo-needs-key",
+                        "key": "MY_CUSTOM_KEY",
+                    },
+                    "purposes": {
+                        "enrichments": {
+                            "model": {
+                                "model": "echo-needs-key",
+                                "key": "ENRICHMENTS_CUSTOM_KEY",
+                            },
+                            "models": [
+                                {"model": "gpt-4o", "key": "ENRICHMENTS_GPT4O_KEY"},
+                                "echo",
+                            ],
+                        },
+                    },
+                }
+            }
+        },
+    )
+
+    # get_secrets returns all registered secrets
+    from datasette_secrets import get_secret as _gs
+
+    # get_secret returns None for unset but registered secrets (not None for unregistered)
+    # The key difference: unregistered secrets return None immediately at line 18-19 of
+    # datasette_secrets, but registered secrets proceed to check env vars and database.
+    # We verify registration by checking that the secrets appear in the list.
+    from datasette_secrets import get_secrets
+
+    secrets = await get_secrets(datasette)
+    secret_names = {s.name for s in secrets}
+
+    assert "MY_CUSTOM_KEY" in secret_names
+    assert "ENRICHMENTS_CUSTOM_KEY" in secret_names
+    assert "ENRICHMENTS_GPT4O_KEY" in secret_names

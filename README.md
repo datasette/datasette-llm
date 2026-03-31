@@ -75,6 +75,55 @@ plugins:
     require_keys: true
 ```
 
+### Model references with custom API keys
+
+Anywhere a model name string is accepted in configuration (`default_model`, `purposes.<name>.model`, or entries in `purposes.<name>.models`), you can use a dictionary with `model` and `key` fields instead. The `key` value is a [datasette-secrets](https://github.com/datasette/datasette-secrets) secret name that will be used as the API key for that model.
+
+```yaml
+plugins:
+  datasette-llm:
+    # Simple case: default model with a custom key
+    default_model:
+      model: gpt-5.4-mini
+      key: CUSTOM_OPENAI_KEY
+
+    purposes:
+      # Pin a purpose to one model with its own billing key
+      query-assistant:
+        model:
+          model: gpt-5.4-mini
+          key: QUERY_ASSISTANT_KEY
+
+      # Multiple models, each with their own key —
+      # even two models from the same provider can use different keys
+      enrichments:
+        model:
+          model: gpt-5.4-nano
+          key: ENRICHMENTS_NANO_KEY
+        models:
+          - model: gpt-5.4
+            key: ENRICHMENTS_GPT5_KEY
+          - model: gpt-5.4-mini
+            key: ENRICHMENTS_MINI_KEY
+          - claude-sonnet-4.6      # Falls through to default key resolution
+```
+
+The `key` field is resolved through datasette-secrets, so you can set it via environment variables:
+
+```bash
+export DATASETTE_SECRETS_QUERY_ASSISTANT_KEY=sk-...
+export DATASETTE_SECRETS_ENRICHMENTS_NANO_KEY=sk-...
+```
+
+When a model is used for a purpose, key resolution follows this order:
+
+1. Key from the matching model-ref dict in the purpose's `model` or `models` config
+2. Key from the `default_model` config (if it's a dict and matches)
+3. Standard datasette-secrets resolution (`<PROVIDER>_API_KEY`)
+4. llm's key resolution (keys.json, environment variables)
+
+The `models` (global allowlist) and `blocked_models` fields remain plain string lists — custom keys are only supported in `default_model`, `purposes.<name>.model`, and `purposes.<name>.models`.
+
 ### Model filtering
 
 The `models` and `blocked_models` keys control which models are available. Use `models` to define an allowlist (only these models will be available) or `blocked_models` to define a blocklist (all models except these will be available). If both are set, the allowlist is applied first and the blocklist removes from the result.
