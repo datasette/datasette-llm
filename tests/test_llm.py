@@ -1383,7 +1383,6 @@ async def test_group_uses_purpose_key(monkeypatch):
 @pytest.mark.asyncio
 async def test_custom_key_secrets_auto_registered():
     """Test that custom key names in config are auto-registered as datasette-secrets."""
-    from datasette_secrets import get_secret
 
     datasette = Datasette(
         memory=True,
@@ -1412,7 +1411,6 @@ async def test_custom_key_secrets_auto_registered():
     )
 
     # get_secrets returns all registered secrets
-    from datasette_secrets import get_secret as _gs
 
     # get_secret returns None for unset but registered secrets (not None for unregistered)
     # The key difference: unregistered secrets return None immediately at line 18-19 of
