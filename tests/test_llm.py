@@ -1410,12 +1410,6 @@ async def test_custom_key_secrets_auto_registered():
         },
     )
 
-    # get_secrets returns all registered secrets
-
-    # get_secret returns None for unset but registered secrets (not None for unregistered)
-    # The key difference: unregistered secrets return None immediately at line 18-19 of
-    # datasette_secrets, but registered secrets proceed to check env vars and database.
-    # We verify registration by checking that the secrets appear in the list.
     from datasette_secrets import get_secrets
 
     secrets = await get_secrets(datasette)
