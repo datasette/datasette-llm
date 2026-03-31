@@ -117,7 +117,7 @@ export DATASETTE_SECRETS_ENRICHMENTS_NANO_KEY=sk-...
 
 When a model is used for a purpose, key resolution follows this order:
 
-1. Key from the matching model-ref dict in the purpose's `model` or `models` config
+1. Key from the purpose's configuration (a matching dict in `model` or `models`)
 2. Key from the `default_model` config (if it's a dict and matches)
 3. Standard datasette-secrets resolution (`<PROVIDER>_API_KEY`)
 4. llm's key resolution (keys.json, environment variables)
