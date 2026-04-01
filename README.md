@@ -162,7 +162,23 @@ datasette-llm integrates with [datasette-secrets](https://github.com/datasette/d
 
 ## Usage
 
-### Basic usage
+### `llm.model()`
+
+```python
+async def model(
+    model_id: Optional[str] = None,
+    purpose: Optional[str] = None,
+    actor: Optional[dict] = None,
+) -> WrappedAsyncModel
+```
+
+Get an async model wrapped with hook support. Returns a `WrappedAsyncModel` that invokes hooks around prompts.
+
+Parameters:
+
+- **`model_id`** (`Optional[str]`): The model to use, e.g. `"gpt-5.4-mini"` or `"claude-sonnet-4.6"`. If not provided, the default model is resolved from configuration — first checking the purpose-specific `model` setting, then the global `default_model`.
+- **`purpose`** (`Optional[str]`): Identifies what this model will be used for, e.g. `"enrichments"`, `"sql-assistant"`. This selects the purpose-specific default model and is passed through to hooks like `llm_prompt_context` for auditing and accounting.
+- **`actor`** (`Optional[dict]`): The Datasette actor dictionary for the current user. Pass this to enable two things: **per-user model filtering**, where plugins using the `llm_filter_models` or `llm_default_model` hooks can restrict or customize models based on who is making the request; and **audit logging**, where auditing plugins that implement `llm_prompt_context` can record which actor ran which prompts.
 
 ```python
 from datasette_llm import LLM
@@ -170,30 +186,55 @@ from datasette_llm import LLM
 async def my_plugin_view(datasette, request):
     llm = LLM(datasette)
 
-    # Get a model (uses default if configured)
+    # Get the default model
     model = await llm.model()
 
-    # Or specify a model explicitly
+    # Specify a model explicitly
     model = await llm.model("gpt-5.4-mini")
+
+    # With purpose and actor for auditing and filtering
+    model = await llm.model(
+        purpose="sql-assistant",
+        actor=request.actor,
+    )
 
     # Execute a prompt
     response = await model.prompt("What is the capital of France?")
     text = await response.text()
 ```
 
-### The `purpose` parameter
-
-Specify a `purpose` to:
-- Select the right default model for the task
-- Enable purpose-based auditing and permissions
-- Allow purpose-specific budget limits (via datasette-llm-accountant)
+### `llm.models()`
 
 ```python
-# Uses the model configured for "sql-assistant" purpose
-model = await llm.model(purpose="sql-assistant")
+async def models(
+    actor: Optional[dict] = None,
+    purpose: Optional[str] = None,
+) -> List
+```
 
-# Or with explicit model (purpose still tracked)
-model = await llm.model("gpt-5.4", purpose="sql-assistant")
+Get available models, filtered by configuration, API key availability, and hooks. Returns a list of model objects.
+
+Parameters:
+
+- **`actor`** (`Optional[dict]`): The Datasette actor dictionary. When provided, the `llm_filter_models` hook can use this to return only models the actor is allowed to use — for example, restricting anonymous users to cheaper models, or looking up per-user model allowlists in a database. Auditing plugins can also use this to log which actors are querying model availability.
+- **`purpose`** (`Optional[str]`): When provided, purpose-specific `models` and `blocked_models` configuration is applied. A purpose-specific `models` allowlist **overrides** the global allowlist, so models can be made available for a specific purpose even if they aren't globally listed.
+
+```python
+llm = LLM(datasette)
+
+# Get all available models (filtered by config and key availability)
+models = await llm.models()
+for model in models:
+    print(model.model_id)
+
+# Filter by actor (for per-user permissions)
+models = await llm.models(actor=request.actor)
+
+# Filter by purpose (applies purpose-specific models/blocked_models config)
+models = await llm.models(purpose="enrichments")
+
+# Both together — e.g. to populate a model picker for the current user
+models = await llm.models(actor=request.actor, purpose="sql-assistant")
 ```
 
 ### Streaming responses
@@ -234,23 +275,6 @@ Benefits of `group()`:
 - **Transactional semantics**: All responses forced to complete on exit
 - **Shared context**: Hooks can treat grouped prompts together (e.g., shared budget reservation)
 - **Cleanup**: The `llm_group_exit` hook is called for settlement/logging
-
-### Listing available models
-
-```python
-llm = LLM(datasette)
-
-# Get all available models (filtered by config and key availability)
-models = await llm.models()
-for model in models:
-    print(model.model_id)
-
-# Filter by actor (for per-user permissions)
-models = await llm.models(actor=request.actor)
-
-# Filter by purpose (applies purpose-specific models/blocked_models config)
-models = await llm.models(purpose="enrichments")
-```
 
 ## Plugin Hooks
 
