@@ -162,6 +162,14 @@ datasette-llm integrates with [datasette-secrets](https://github.com/datasette/d
 
 ## Usage
 
+All examples below assume you have created an `LLM` instance:
+
+```python
+from datasette_llm import LLM
+
+llm = LLM(datasette)
+```
+
 ### `llm.model()`
 
 ```python
@@ -181,8 +189,6 @@ Parameters:
 - **`actor`** (`Optional[dict]`): The Datasette actor dictionary for the current user. Pass this to enable two things: **per-user model filtering**, where plugins using the `llm_filter_models` or `llm_default_model` hooks can restrict or customize models based on who is making the request; and **audit logging**, where auditing plugins that implement `llm_prompt_context` can record which actor ran which prompts.
 
 ```python
-from datasette_llm import LLM
-
 async def my_plugin_view(datasette, request):
     llm = LLM(datasette)
 
