@@ -191,12 +191,85 @@ class PromptResult:
     Container for prompt execution results, populated by the wrapper.
 
     Context managers from hooks receive this object and can access
-    the response after the prompt executes.
+    the responses after the prompt executes. For chain() calls,
+    callbacks can be registered before responses are available and
+    will be attached as responses are produced.
     """
 
     response: Optional[llm_library.AsyncResponse] = field(default=None)
+    responses: List[llm_library.AsyncResponse] = field(default_factory=list)
     purpose: Optional[str] = field(default=None)
     group: Optional[Group] = field(default=None)
+    _response_done_callbacks: list = field(default_factory=list)
+
+    async def add_response(self, response: llm_library.AsyncResponse) -> None:
+        """Record a response and attach any registered completion callbacks."""
+        if self.response is None:
+            self.response = response
+        self.responses.append(response)
+        for callback in self._response_done_callbacks:
+            await response.on_done(callback)
+
+    async def on_response_done(self, callback) -> None:
+        """
+        Register a callback for when tracked responses complete.
+
+        The callback is attached to existing responses immediately and to any
+        future responses added by a chain.
+        """
+        self._response_done_callbacks.append(callback)
+        for response in self.responses:
+            await response.on_done(callback)
+
+
+class WrappedAsyncChainResponse:
+    """
+    Wraps an AsyncChainResponse so hooks can observe each yielded response.
+    """
+
+    def __init__(
+        self,
+        chain_response,
+        context_factories,
+        result: PromptResult,
+        group: Optional[Group] = None,
+    ):
+        self._chain_response = chain_response
+        self._context_factories = context_factories
+        self._result = result
+        self._group = group
+        self._prepared = False
+        self._prepare_lock = asyncio.Lock()
+
+    async def _prepare(self) -> None:
+        """
+        Run hook enter/exit logic once before the chain starts yielding responses.
+
+        This preserves the existing hook pattern where plugins do setup before
+        the call and register response handlers after yield.
+        """
+        if self._prepared:
+            return
+        async with self._prepare_lock:
+            if self._prepared:
+                return
+            async with AsyncExitStack() as stack:
+                for factory in self._context_factories:
+                    if factory is not None:
+                        ctx = factory(self._result)
+                        await stack.enter_async_context(ctx)
+            self._prepared = True
+
+    async def responses(self):
+        await self._prepare()
+        async for response in self._chain_response.responses():
+            await self._result.add_response(response)
+            if self._group is not None:
+                self._group._responses.append(response)
+            yield response
+
+    def __getattr__(self, name):
+        return getattr(self._chain_response, name)
 
 
 class WrappedConversation:
@@ -251,13 +324,37 @@ class WrappedConversation:
             )
 
             # Populate result so context managers can access it on exit
-            result.response = response
+            await result.add_response(response)
 
             # Track response in group for forced completion on group exit
             if self._group is not None:
                 self._group._responses.append(response)
 
         return response
+
+    def chain(self, prompt_text: str, **kwargs):
+        """
+        Execute a conversation chain with tool support.
+
+        Wrap each yielded response in the existing prompt hook lifecycle,
+        so hook implementations can track chain responses the same way they
+        track direct prompt() responses.
+        """
+        context_factories = pm.hook.llm_prompt_context(
+            datasette=self._datasette,
+            model_id=self._model_id,
+            prompt=prompt_text,
+            purpose=self._purpose,
+            actor=self._actor,
+        )
+        result = PromptResult(purpose=self._purpose, group=self._group)
+        chain_response = self._conversation.chain(prompt_text, key=self._key, **kwargs)
+        return WrappedAsyncChainResponse(
+            chain_response=chain_response,
+            context_factories=context_factories,
+            result=result,
+            group=self._group,
+        )
 
 
 class WrappedAsyncModel:
@@ -305,6 +402,14 @@ class WrappedAsyncModel:
             actor=self._actor,
         )
 
+    def chain(self, prompt_text: str, **kwargs):
+        """
+        Execute a chain with tool support via a wrapped conversation.
+
+        Returns an AsyncChainResponse.
+        """
+        return self.conversation().chain(prompt_text, **kwargs)
+
     async def prompt(self, prompt_text: str, **kwargs) -> llm_library.AsyncResponse:
         """
         Execute a prompt with hook context managers wrapping the call.
@@ -341,7 +446,7 @@ class WrappedAsyncModel:
             # Populate result so context managers can access it on exit
             # Note: response may still be streaming - hooks should use
             # response.on_done() to track usage after completion
-            result.response = response
+            await result.add_response(response)
 
             # Track response in group for forced completion on group exit
             if self._group is not None:

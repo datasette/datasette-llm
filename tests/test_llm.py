@@ -2,6 +2,7 @@ from datasette.app import Datasette
 from datasette import hookimpl
 from datasette.plugins import pm
 from contextlib import asynccontextmanager
+import json
 import pytest
 
 
@@ -100,6 +101,82 @@ async def test_llm_prompt_context_hook():
         assert hook_calls[0]["purpose"] == "test-purpose"
         assert hook_calls[1]["phase"] == "on_done"
         assert "Test prompt" in hook_calls[1]["response_text"]
+    finally:
+        pm.unregister(plugin)
+
+
+@pytest.mark.asyncio
+async def test_llm_prompt_context_hook_tracks_chain_responses():
+    """Test that the prompt context hook can observe each response in a chain."""
+    from datasette_llm import LLM
+
+    hook_calls = []
+
+    class TestPlugin:
+        __name__ = "test_plugin_chain"
+
+        @hookimpl
+        def llm_prompt_context(self, datasette, model_id, prompt, purpose):
+            @asynccontextmanager
+            async def tracker(result):
+                hook_calls.append(
+                    {
+                        "phase": "before",
+                        "model_id": model_id,
+                        "prompt": prompt,
+                        "purpose": purpose,
+                    }
+                )
+                yield
+
+                async def on_complete(response):
+                    hook_calls.append(
+                        {
+                            "phase": "on_done",
+                            "model_id": model_id,
+                            "response_text": await response.text(),
+                        }
+                    )
+
+                await result.on_response_done(on_complete)
+
+            return tracker
+
+    def example(input: str) -> str:
+        return f"Example output for {input}"
+
+    plugin = TestPlugin()
+    pm.register(plugin)
+    try:
+        datasette = Datasette(memory=True)
+        llm = LLM(datasette)
+        model = await llm.model("echo", purpose="test-purpose")
+
+        chain_response = model.chain(
+            json.dumps(
+                {
+                    "tool_calls": [
+                        {
+                            "name": "example",
+                            "arguments": {"input": "test"},
+                        }
+                    ],
+                    "prompt": "Test prompt",
+                }
+            ),
+            tools=[example],
+        )
+
+        responses = []
+        async for response in chain_response.responses():
+            responses.append(await response.text())
+
+        assert len(responses) == 2
+        assert len(hook_calls) == 3
+        assert hook_calls[0]["phase"] == "before"
+        assert hook_calls[0]["model_id"] == "echo"
+        assert hook_calls[0]["purpose"] == "test-purpose"
+        assert len([call for call in hook_calls if call["phase"] == "on_done"]) == 2
     finally:
         pm.unregister(plugin)
 
