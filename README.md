@@ -258,7 +258,8 @@ datasette-llm provides hooks for other plugins to extend LLM operations.
 
 ### `llm_prompt_context`
 
-Wrap prompt execution with custom logic:
+Wrap prompt execution with custom logic. The same hook is used for direct
+`prompt()` calls and for each response yielded by `chain()`:
 
 ```python
 from datasette import hookimpl
@@ -274,16 +275,20 @@ def llm_prompt_context(datasette, model_id, prompt, purpose, actor):
 
         yield
 
-        # After prompt() returns (response may still be streaming)
+        # After prompt() returns or chain() is initialized
         async def on_complete(response):
             usage = await response.usage()
             print(f"Used {usage.input} input, {usage.output} output tokens")
 
-        if result.response:
-            await result.response.on_done(on_complete)
+        await result.on_response_done(on_complete)
 
     return wrapper
 ```
+
+`result.response` continues to expose the first response, while
+`result.responses` contains all responses seen so far. The
+`await result.on_response_done(callback)` helper attaches a callback to all
+existing responses and any future responses produced by a chain.
 
 ### `llm_group_exit`
 
