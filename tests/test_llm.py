@@ -842,6 +842,60 @@ async def test_purpose_blocked_models_overrides_global():
     assert "gpt-4o" in purpose_ids
 
 
+@pytest.mark.asyncio
+async def test_purpose_default_model_automatically_in_models_list():
+    """A purpose's default model should be automatically allowed even if not in models list."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "purposes": {
+                        "enrichments": {
+                            "model": "echo",
+                            "models": ["gpt-4o"],  # echo not listed here
+                        },
+                    },
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # echo should be allowed because it's the default model for this purpose
+    filtered = await llm.models(purpose="enrichments")
+    filtered_ids = [m.model_id for m in filtered]
+    assert "echo" in filtered_ids
+
+
+@pytest.mark.asyncio
+async def test_global_default_model_automatically_in_models_list():
+    """The global default_model should be automatically allowed even if not in models list."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "default_model": "echo",
+                    "models": ["gpt-4o"],  # echo not listed here
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+
+    # echo should be allowed because it's the global default model
+    filtered = await llm.models()
+    filtered_ids = [m.model_id for m in filtered]
+    assert "echo" in filtered_ids
+
+
 # Ordering tests
 
 

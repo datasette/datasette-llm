@@ -152,6 +152,10 @@ def llm_filter_models(datasette, models, purpose):
                 if purpose_allowed_raw
                 else set()
             )
+            # Auto-include the purpose's default model
+            purpose_default = purpose_config.get("model")
+            if purpose_default:
+                purpose_allowed_ids.add(_parse_model_ref(purpose_default)[0])
             combined = purpose_allowed_ids | set(global_allowed or [])
             models = [m for m in models if m.model_id in combined]
         purpose_blocked = purpose_config.get("blocked_models")
@@ -160,7 +164,12 @@ def llm_filter_models(datasette, models, purpose):
     else:
         allowed = config.get("models")
         if allowed:
-            models = [m for m in models if m.model_id in allowed]
+            allowed_ids = set(allowed)
+            # Auto-include the global default model
+            global_default = config.get("default_model")
+            if global_default:
+                allowed_ids.add(_parse_model_ref(global_default)[0])
+            models = [m for m in models if m.model_id in allowed_ids]
 
     blocked = config.get("blocked_models")
     if blocked:

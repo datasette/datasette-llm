@@ -126,14 +126,14 @@ The `models` (global allowlist) and `blocked_models` fields remain plain string 
 
 ### Model filtering
 
-The `models` and `blocked_models` keys control which models are available. Use `models` to define an allowlist (only these models will be available) or `blocked_models` to define a blocklist (all models except these will be available). If both are set, the allowlist is applied first and the blocklist removes from the result.
+The `models` and `blocked_models` keys control which models are available. Use `models` to define an allowlist (only these models will be available) or `blocked_models` to define a blocklist (all models except these will be available). If both are set, the allowlist is applied first and the blocklist removes from the result. The `default_model` is automatically included in the allowlist, so you don't need to repeat it there.
 
 ### Purpose-specific configuration
 
 Plugins register **purposes** to describe what they use LLM models for (e.g. `"extract"`, `"enrichments"`, `"sql-assistant"`). Each purpose can have its own configuration under `purposes.<name>`:
 
 - **`model`**: The default model for this purpose, used when a plugin calls `await llm.model(purpose="extract")` without specifying a model ID.
-- **`models`**: An allowlist of models for this purpose. When set, this **overrides** the global `models` allowlist — so a model can be available for a specific purpose even if it is not in the global list. This filtering is applied when a plugin calls `await llm.models(purpose="extract")`.
+- **`models`**: An allowlist of models for this purpose. When set, this **overrides** the global `models` allowlist — so a model can be available for a specific purpose even if it is not in the global list. The purpose's default `model` is automatically included in this allowlist, so you don't need to repeat it. This filtering is applied when a plugin calls `await llm.models(purpose="extract")`.
 - **`blocked_models`**: A blocklist of models for this purpose. These are removed even if the model is globally allowed.
 
 When no purpose-specific `models` list is set, the global `models` allowlist applies. The global `blocked_models` always applies regardless of purpose configuration.
