@@ -1549,3 +1549,60 @@ async def test_custom_key_secrets_auto_registered():
     assert "MY_CUSTOM_KEY" in secret_names
     assert "ENRICHMENTS_CUSTOM_KEY" in secret_names
     assert "ENRICHMENTS_GPT4O_KEY" in secret_names
+
+
+@pytest.mark.asyncio
+async def test_default_model_options_applied():
+    """default_model dict form with options should pass options to prompt()."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "default_model": {
+                        "model": "echo",
+                        "options": {"thinking": True},
+                    }
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+    model = await llm.model()
+    assert model.model_id == "echo"
+
+    response = await model.prompt("hi")
+    await response.text()
+    parts = (await response.messages())[0].parts
+    part_types = [type(p).__name__ for p in parts]
+    assert "ReasoningPart" in part_types
+
+
+@pytest.mark.asyncio
+async def test_default_model_options_overridden_by_kwargs():
+    """A per-call kwarg should override a configured default option."""
+    from datasette_llm import LLM
+
+    datasette = Datasette(
+        memory=True,
+        metadata={
+            "plugins": {
+                "datasette-llm": {
+                    "default_model": {
+                        "model": "echo",
+                        "options": {"thinking": True},
+                    }
+                }
+            }
+        },
+    )
+    llm = LLM(datasette)
+    model = await llm.model()
+
+    response = await model.prompt("hi", thinking=False)
+    await response.text()
+    parts = (await response.messages())[0].parts
+    part_types = [type(p).__name__ for p in parts]
+    assert "ReasoningPart" not in part_types

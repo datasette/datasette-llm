@@ -9,7 +9,7 @@ LLM integration for Datasette plugins.
 
 This plugin provides a standard interface for Datasette plugins to use LLM models via the [llm](https://llm.datasette.io/) library, with:
 
-- **Model management**: Control which models are available, with filtering and defaults
+- **Model management**: Control which models are available, with filtering, defaults, and model options
 - **API key management**: Integration with [datasette-secrets](https://github.com/datasette/datasette-secrets) for secure key storage
 - **Hooks for extensibility**: Track usage, enforce policies, implement accounting
 
@@ -75,37 +75,71 @@ plugins:
     require_keys: true
 ```
 
-### Model references with custom API keys
+### Model references with custom API keys and options
 
-Anywhere a model name string is accepted in configuration (`default_model`, `purposes.<name>.model`, or entries in `purposes.<name>.models`), you can use a dictionary with `model` and `key` fields instead. The `key` value is a [datasette-secrets](https://github.com/datasette/datasette-secrets) secret name that will be used as the API key for that model.
+Anywhere a model name string is accepted in configuration (`default_model`, `purposes.<name>.model`, or entries in `purposes.<name>.models`), you can use a dictionary instead.
+
+The dictionary supports these fields:
+
+- **`model`**: Required model ID, e.g. `"gpt-5.4-mini"`.
+- **`key`**: Optional [datasette-secrets](https://github.com/datasette/datasette-secrets) secret name to use as the API key for that model.
+- **`options`**: Optional dictionary of default prompt options for that model. These are passed through to the underlying [llm](https://llm.datasette.io/) model plugin, so supported option names depend on the selected model.
 
 ```yaml
 plugins:
   datasette-llm:
-    # Simple case: default model with a custom key
+    # Default model with a custom key and default options
     default_model:
       model: gpt-5.4-mini
       key: CUSTOM_OPENAI_KEY
+      options:
+        temperature: 0.2
 
     purposes:
-      # Pin a purpose to one model with its own billing key
+      # Pin a purpose to one model with its own billing key and options
       query-assistant:
         model:
           model: gpt-5.4-mini
           key: QUERY_ASSISTANT_KEY
+          options:
+            temperature: 0
 
-      # Multiple models, each with their own key —
-      # even two models from the same provider can use different keys
+      # Multiple models, each with their own key and/or options
       enrichments:
         model:
           model: gpt-5.4-nano
           key: ENRICHMENTS_NANO_KEY
+          options:
+            max_tokens: 1000
         models:
           - model: gpt-5.4
             key: ENRICHMENTS_GPT5_KEY
           - model: gpt-5.4-mini
             key: ENRICHMENTS_MINI_KEY
+            options:
+              temperature: 0.1
           - claude-sonnet-4.6      # Falls through to default key resolution
+```
+
+Configured `options` become defaults for calls made through `await llm.model()` or `llm.group()`. Per-call options override configured defaults:
+
+```python
+model = await llm.model()
+
+# Uses temperature: 0.2 from datasette.yaml
+response = await model.prompt("Suggest three tags")
+
+# Overrides the configured temperature for this one prompt
+response = await model.prompt("Suggest three tags", temperature=0.7)
+```
+
+For chained prompts, pass per-call overrides in the `options=` dictionary:
+
+```python
+responses = model.chain(
+    "Suggest three tags",
+    options={"temperature": 0.7},
+)
 ```
 
 The `key` field is resolved through datasette-secrets, so you can set it via environment variables:
@@ -122,7 +156,9 @@ When a model is used for a purpose, key resolution follows this order:
 3. Standard datasette-secrets resolution (`<PROVIDER>_API_KEY`)
 4. llm's key resolution (keys.json, environment variables)
 
-The `models` (global allowlist) and `blocked_models` fields remain plain string lists — custom keys are only supported in `default_model`, `purposes.<name>.model`, and `purposes.<name>.models`.
+The `models` (global allowlist) and `blocked_models` fields remain plain string lists — custom keys and options are only supported in `default_model`, `purposes.<name>.model`, and `purposes.<name>.models`.
+
+Model options use the same configuration resolution order as custom keys: the matching purpose-specific model reference is checked first, then the global `default_model` reference if it names the same model.
 
 ### Model filtering
 

@@ -34,11 +34,14 @@ KEY_OBTAIN_URLS = {
 def _parse_model_ref(ref) -> tuple:
     """
     Parse a model reference that's either a string or a dict.
-    Returns (model_id, key_secret_name_or_none).
+    Returns (model_id, key_secret_name_or_none, options_or_none).
+
+    Dict form supports:
+      {"model": "echo", "key": "MY_KEY", "options": {"thinking": true}}
     """
     if isinstance(ref, dict):
-        return ref["model"], ref.get("key")
-    return ref, None
+        return ref["model"], ref.get("key"), ref.get("options")
+    return ref, None, None
 
 
 @dataclass
@@ -109,7 +112,7 @@ def register_secrets(datasette):
     # Also register any custom key names from model-ref dicts in config
     config = datasette.plugin_config("datasette-llm") or {}
     for ref in _iter_model_refs(config):
-        _, key_name = _parse_model_ref(ref)
+        _, key_name, _ = _parse_model_ref(ref)
         if key_name and key_name not in seen:
             seen.add(key_name)
             secrets.append(
@@ -295,6 +298,7 @@ class WrappedConversation:
         group: Optional[Group] = None,
         key: Optional[str] = None,
         actor: Optional[dict] = None,
+        options: Optional[dict] = None,
     ):
         self._conversation = conversation
         self._datasette = datasette
@@ -303,6 +307,30 @@ class WrappedConversation:
         self._group = group
         self._key = key
         self._actor = actor
+        self._options = options or {}
+
+    def _merged_prompt_kwargs(self, kwargs: dict) -> dict:
+        """Merge configured default options into prompt() kwargs.
+
+        prompt() collects options via **kwargs, so we splice options
+        directly into the kwargs dict. Caller-supplied kwargs win over
+        configured defaults.
+        """
+        if not self._options:
+            return kwargs
+        return {**self._options, **kwargs}
+
+    def _merged_chain_kwargs(self, kwargs: dict) -> dict:
+        """Merge configured default options into chain() kwargs.
+
+        chain() takes options as a single ``options=`` dict (not
+        unpacked kwargs), so we merge into that dict. Caller-supplied
+        keys in ``options`` win over configured defaults.
+        """
+        if not self._options:
+            return kwargs
+        caller_options = kwargs.get("options") or {}
+        return {**kwargs, "options": {**self._options, **caller_options}}
 
     async def prompt(self, prompt_text: str, **kwargs) -> llm_library.AsyncResponse:
         """
@@ -329,7 +357,7 @@ class WrappedConversation:
 
             # Execute the actual conversation prompt, passing the resolved key
             response = await self._conversation.prompt(
-                prompt_text, key=self._key, **kwargs
+                prompt_text, key=self._key, **self._merged_prompt_kwargs(kwargs)
             )
 
             # Populate result so context managers can access it on exit
@@ -357,7 +385,9 @@ class WrappedConversation:
             actor=self._actor,
         )
         result = PromptResult(purpose=self._purpose, group=self._group)
-        chain_response = self._conversation.chain(prompt_text, key=self._key, **kwargs)
+        chain_response = self._conversation.chain(
+            prompt_text, key=self._key, **self._merged_chain_kwargs(kwargs)
+        )
         return WrappedAsyncChainResponse(
             chain_response=chain_response,
             context_factories=context_factories,
@@ -379,6 +409,7 @@ class WrappedAsyncModel:
         group: Optional[Group] = None,
         key: Optional[str] = None,
         actor: Optional[dict] = None,
+        options: Optional[dict] = None,
     ):
         self._model = model
         self._datasette = datasette
@@ -386,6 +417,7 @@ class WrappedAsyncModel:
         self._group = group
         self._key = key
         self._actor = actor
+        self._options = options or {}
 
     @property
     def model_id(self) -> str:
@@ -409,6 +441,7 @@ class WrappedAsyncModel:
             group=self._group,
             key=self._key,
             actor=self._actor,
+            options=self._options,
         )
 
     def chain(self, prompt_text: str, **kwargs):
@@ -449,8 +482,11 @@ class WrappedAsyncModel:
                     ctx = factory(result)
                     await stack.enter_async_context(ctx)
 
-            # Execute the actual prompt, passing the resolved key
-            response = await self._model.prompt(prompt_text, key=self._key, **kwargs)
+            # Execute the actual prompt, passing the resolved key.
+            # prompt() collects options via **kwargs so configured
+            # options merge into the kwargs dict (caller wins).
+            merged = {**self._options, **kwargs} if self._options else kwargs
+            response = await self._model.prompt(prompt_text, key=self._key, **merged)
 
             # Populate result so context managers can access it on exit
             # Note: response may still be streaming - hooks should use
@@ -499,23 +535,56 @@ class LLM:
 
             # Check purpose models list first (most specific)
             for entry in purpose_config.get("models", []):
-                ref_id, ref_key = _parse_model_ref(entry)
+                ref_id, ref_key, _ = _parse_model_ref(entry)
                 if ref_id == model_id and ref_key:
                     return ref_key
 
             # Check purpose default model
             purpose_model = purpose_config.get("model")
             if purpose_model:
-                ref_id, ref_key = _parse_model_ref(purpose_model)
+                ref_id, ref_key, _ = _parse_model_ref(purpose_model)
                 if ref_id == model_id and ref_key:
                     return ref_key
 
         # Check global default_model
         default = config.get("default_model")
         if default:
-            ref_id, ref_key = _parse_model_ref(default)
+            ref_id, ref_key, _ = _parse_model_ref(default)
             if ref_id == model_id and ref_key:
                 return ref_key
+
+        return None
+
+    def _get_options_for_model(
+        self, model_id: str, purpose: Optional[str]
+    ) -> Optional[dict]:
+        """
+        Look up default model options from purpose or default_model config.
+
+        Same resolution order as _get_purpose_key_for_model: purpose's
+        models list, purpose's default, then global default_model.
+        """
+        config = self._get_config()
+
+        if purpose:
+            purpose_config = config.get("purposes", {}).get(purpose, {})
+
+            for entry in purpose_config.get("models", []):
+                ref_id, _, ref_options = _parse_model_ref(entry)
+                if ref_id == model_id and ref_options:
+                    return ref_options
+
+            purpose_model = purpose_config.get("model")
+            if purpose_model:
+                ref_id, _, ref_options = _parse_model_ref(purpose_model)
+                if ref_id == model_id and ref_options:
+                    return ref_options
+
+        default = config.get("default_model")
+        if default:
+            ref_id, _, ref_options = _parse_model_ref(default)
+            if ref_id == model_id and ref_options:
+                return ref_options
 
         return None
 
@@ -608,13 +677,13 @@ class LLM:
             if purpose in purposes:
                 purpose_model = purposes[purpose].get("model")
                 if purpose_model:
-                    model_id, _ = _parse_model_ref(purpose_model)
+                    model_id, _, _ = _parse_model_ref(purpose_model)
                     return model_id
 
         # Global default
         default = config.get("default_model")
         if default:
-            model_id, _ = _parse_model_ref(default)
+            model_id, _, _ = _parse_model_ref(default)
             return model_id
 
         raise ModelNotFoundError(
@@ -641,11 +710,11 @@ class LLM:
         if purpose:
             raw = purpose_config.get("model")
             if raw:
-                default_model_id, _ = _parse_model_ref(raw)
+                default_model_id, _, _ = _parse_model_ref(raw)
         if not default_model_id:
             raw = config.get("default_model")
             if raw:
-                default_model_id, _ = _parse_model_ref(raw)
+                default_model_id, _, _ = _parse_model_ref(raw)
 
         # Build a lookup from model_id to model object
         model_by_id = {m.model_id: m for m in models}
@@ -666,7 +735,7 @@ class LLM:
         # 2. Purpose-specific models in config order
         if purpose_models_list:
             for entry in purpose_models_list:
-                entry_id, _ = _parse_model_ref(entry)
+                entry_id, _, _ = _parse_model_ref(entry)
                 add(entry_id)
 
         # 3. Global models in config order
@@ -708,8 +777,16 @@ class LLM:
         # Resolve the API key for this model
         key = await self.get_key_for_model(model, actor, purpose=purpose)
 
+        # Resolve any default options configured for this model
+        options = self._get_options_for_model(resolved_model_id, purpose)
+
         return WrappedAsyncModel(
-            model, self._datasette, purpose=purpose, key=key, actor=actor
+            model,
+            self._datasette,
+            purpose=purpose,
+            key=key,
+            actor=actor,
+            options=options,
         )
 
     async def models(
