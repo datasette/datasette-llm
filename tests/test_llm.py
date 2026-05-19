@@ -182,6 +182,74 @@ async def test_llm_prompt_context_hook_tracks_chain_responses():
 
 
 @pytest.mark.asyncio
+async def test_llm_prompt_context_chain_exits_after_responses():
+    """Chain hook contexts should exit after responses have been yielded."""
+    from datasette_llm import LLM
+
+    hook_calls = []
+
+    class TestPlugin:
+        __name__ = "test_plugin_chain_exit"
+
+        @hookimpl
+        def llm_prompt_context(self, datasette, model_id, prompt, purpose):
+            @asynccontextmanager
+            async def tracker(result):
+                hook_calls.append({"phase": "before"})
+                yield
+                hook_calls.append(
+                    {
+                        "phase": "after",
+                        "is_chain": result.is_chain,
+                        "chain_complete": result.chain_complete,
+                        "responses": len(result.responses),
+                    }
+                )
+
+            return tracker
+
+    def example(input: str) -> str:
+        return f"Example output for {input}"
+
+    plugin = TestPlugin()
+    pm.register(plugin)
+    try:
+        datasette = Datasette(memory=True)
+        llm = LLM(datasette)
+        model = await llm.model("echo")
+
+        chain_response = model.chain(
+            json.dumps(
+                {
+                    "tool_calls": [
+                        {
+                            "name": "example",
+                            "arguments": {"input": "test"},
+                        }
+                    ],
+                    "prompt": "Test prompt",
+                }
+            ),
+            tools=[example],
+        )
+
+        async for response in chain_response.responses():
+            await response.text()
+
+        assert hook_calls == [
+            {"phase": "before"},
+            {
+                "phase": "after",
+                "is_chain": True,
+                "chain_complete": True,
+                "responses": 2,
+            },
+        ]
+    finally:
+        pm.unregister(plugin)
+
+
+@pytest.mark.asyncio
 async def test_multiple_context_hooks():
     """Test that multiple hooks are all called in order."""
     from datasette_llm import LLM

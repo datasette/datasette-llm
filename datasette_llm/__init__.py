@@ -212,6 +212,8 @@ class PromptResult:
     responses: List[llm_library.AsyncResponse] = field(default_factory=list)
     purpose: Optional[str] = field(default=None)
     group: Optional[Group] = field(default=None)
+    is_chain: bool = field(default=False)
+    chain_complete: bool = field(default=False)
     _response_done_callbacks: list = field(default_factory=list)
 
     async def add_response(self, response: llm_library.AsyncResponse) -> None:
@@ -249,36 +251,30 @@ class WrappedAsyncChainResponse:
         self._chain_response = chain_response
         self._context_factories = context_factories
         self._result = result
+        self._result.is_chain = True
         self._group = group
         self._prepared = False
         self._prepare_lock = asyncio.Lock()
 
-    async def _prepare(self) -> None:
-        """
-        Run hook enter/exit logic once before the chain starts yielding responses.
-
-        This preserves the existing hook pattern where plugins do setup before
-        the call and register response handlers after yield.
-        """
-        if self._prepared:
-            return
+    async def responses(self):
         async with self._prepare_lock:
             if self._prepared:
-                return
-            async with AsyncExitStack() as stack:
-                for factory in self._context_factories:
-                    if factory is not None:
-                        ctx = factory(self._result)
-                        await stack.enter_async_context(ctx)
+                raise RuntimeError("Chain responses can only be iterated once")
             self._prepared = True
 
-    async def responses(self):
-        await self._prepare()
-        async for response in self._chain_response.responses():
-            await self._result.add_response(response)
-            if self._group is not None:
-                self._group._responses.append(response)
-            yield response
+        async with AsyncExitStack() as stack:
+            for factory in self._context_factories:
+                if factory is not None:
+                    ctx = factory(self._result)
+                    await stack.enter_async_context(ctx)
+            try:
+                async for response in self._chain_response.responses():
+                    await self._result.add_response(response)
+                    if self._group is not None:
+                        self._group._responses.append(response)
+                    yield response
+            finally:
+                self._result.chain_complete = True
 
     def __getattr__(self, name):
         return getattr(self._chain_response, name)
