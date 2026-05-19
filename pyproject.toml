@@ -1,6 +1,6 @@
 [project]
 name = "datasette-llm"
-version = "0.1a7"
+version = "0.1a8"
 description = "LLM integration for Datasette"
 readme = "README.md"
 authors = [{name = "Simon Willison"}]
