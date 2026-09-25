@@ -461,7 +461,9 @@ Each `prompt()` and `chain()` call emits one `datasette_llm.prompt` span (scope 
 - `datasette_llm.actor.present`: whether an actor was attached (never the actor itself)
 - `error.type`: the exception class name, if the call failed (`llm.PauseChain` is not an error)
 
-No prompt or response text, actor details or error messages are recorded. This plugin depends only on `opentelemetry-api`, so the span is a no-op until an OpenTelemetry SDK and tracer provider are configured. Versions of `llm` that include OpenTelemetry support add their own `chat` and `execute_tool` spans as children of this one.
+A `datasette_llm.token.usage` histogram (unit `{token}`) records each completed response's reported input and output tokens, with attributes `datasette_llm.purpose`, `gen_ai.request.model` and `gen_ai.token.type` (`input` or `output`). Because the purpose becomes a metric attribute, purposes should be fixed identifiers such as `"agent"`, never per-user or per-request values.
+
+No prompt or response text, actor details or error messages are recorded. This plugin depends only on `opentelemetry-api`, so the span and histogram are no-ops until an OpenTelemetry SDK and providers are configured. Versions of `llm` that include OpenTelemetry support add their own `chat` and `execute_tool` spans as children of this one.
 
 ## Related Plugins
 

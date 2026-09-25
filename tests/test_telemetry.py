@@ -7,7 +7,10 @@ from datasette import hookimpl
 from datasette.app import Datasette
 from datasette.plugins import pm
 import llm
-from opentelemetry import context, trace
+from opentelemetry import context, metrics, trace
+from opentelemetry.sdk.metrics import Histogram, MeterProvider
+from opentelemetry.sdk.metrics.export import AggregationTemporality
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -41,6 +44,34 @@ def _exporter():
 def exporter(_exporter):
     _exporter.clear()
     return _exporter
+
+
+@pytest.fixture(scope="session")
+def _metric_reader():
+    # Delta temporality, so each collection holds only what was recorded since
+    reader = InMemoryMetricReader(
+        preferred_temporality={Histogram: AggregationTemporality.DELTA}
+    )
+    metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+    return reader
+
+
+@pytest.fixture
+def token_points(_metric_reader):
+    _metric_reader.get_metrics_data()
+
+    def collect():
+        data = _metric_reader.get_metrics_data()
+        return [
+            point
+            for rm in (data.resource_metrics if data else [])
+            for sm in rm.scope_metrics
+            for metric in sm.metrics
+            if metric.name == "datasette_llm.token.usage"
+            for point in metric.data.data_points
+        ]
+
+    return collect
 
 
 def spans(exporter, name="datasette_llm.prompt"):
@@ -174,3 +205,32 @@ async def test_hook_exception(exporter, kind, exception):
         # PauseChain suspends a turn; it is not an error
         assert "error.type" not in span.attributes
         assert span.status.status_code == StatusCode.UNSET
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", ["agent", None])
+async def test_token_usage_histogram(token_points, purpose):
+    model = await LLM(Datasette(memory=True)).model("echo", purpose=purpose)
+    async for response in model.chain(TOOL_PROMPT, tools=[example]).responses():
+        await response.text()
+
+    points = {p.attributes["gen_ai.token.type"]: p for p in token_points()}
+    assert set(points) == {"input", "output"}
+    for point in points.values():
+        assert dict(point.attributes) == {
+            "datasette_llm.purpose": purpose or "none",
+            "gen_ai.request.model": "echo",
+            "gen_ai.token.type": point.attributes["gen_ai.token.type"],
+        }
+        assert point.count == 2  # one per chain response
+        assert point.explicit_bounds[-1] == 67108864
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conversation", [False, True])
+async def test_token_usage_histogram_prompt(token_points, conversation):
+    model = await LLM(Datasette(memory=True)).model("echo", purpose="agent")
+    target = model.conversation() if conversation else model
+    await (await target.prompt("Hello")).text()
+    counts = {p.attributes["gen_ai.token.type"]: p.count for p in token_points()}
+    assert counts == {"input": 1, "output": 1}
