@@ -1,4 +1,6 @@
+import asyncio
 from contextlib import asynccontextmanager, contextmanager
+import gc
 import json
 
 from datasette import hookimpl
@@ -107,15 +109,35 @@ async def test_prompt_and_chain_spans(exporter, conversation, purpose, actor, ki
 
 
 @pytest.mark.asyncio
-async def test_chain_closed_early_restores_context(exporter):
+@pytest.mark.parametrize("close", [True, False])
+async def test_chain_abandoned(exporter, caplog, close):
     model = await LLM(Datasette(memory=True)).model("echo")
     gen = model.chain(TOOL_PROMPT, tools=[example]).responses()
     async for response in gen:
         break
-    await gen.aclose()
-    assert not trace.get_current_span().get_span_context().is_valid
+    if close:
+        await gen.aclose()
+        assert not trace.get_current_span().get_span_context().is_valid
+    else:
+        # asyncio finalizes the generator in another task and Context; the
+        # span stays current in this task's context, by design (see README)
+        del gen
+        gc.collect()
+        await asyncio.sleep(0.01)
     (span,) = spans(exporter)
     assert span.status.status_code == StatusCode.UNSET
+    assert span.attributes["datasette_llm.outcome"] == "abandoned"
+    assert "Failed to detach context" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_hook_leaked_context_does_not_reach_caller(exporter):
+    leaked = trace.get_tracer("test").start_span("leaked")
+    attach = lambda: context.attach(trace.set_span_in_context(leaked))
+    model = await LLM(Datasette(memory=True)).model("echo")
+    with prompt_hook(attach):
+        await model.prompt("Hello")
+    assert trace.get_current_span() is not leaked
 
 
 @pytest.mark.asyncio

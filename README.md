@@ -453,7 +453,7 @@ async def llm_default_model(datasette, purpose, actor):
 
 ## OpenTelemetry
 
-Each `prompt()` and `chain()` call emits one `datasette_llm.prompt` span (scope `datasette_llm`). For a chain it covers the whole iteration and is current while you iterate, so `llm_prompt_context` hook work nests under it. If you stop iterating early, close the generator (e.g. `async with contextlib.aclosing(chain.responses()) as responses:`), otherwise the span stays current in your task until the generator is garbage-collected. Exceptions raised in your own loop body are not recorded on the span. Attributes:
+Each `prompt()` and `chain()` call emits one `datasette_llm.prompt` span (scope `datasette_llm`). For a chain it covers the whole iteration and is current while you iterate, so `llm_prompt_context` hook work nests under it. If you stop iterating early, close the generator (e.g. `async with contextlib.aclosing(chain.responses()) as responses:`), otherwise the span stays current in your task and only ends, marked `datasette_llm.outcome="abandoned"`, when the generator is garbage-collected. Exceptions raised in your own loop body are not recorded on the span. Attributes:
 
 - `datasette_llm.kind`: `"prompt"` or `"chain"`
 - `datasette_llm.purpose`: the purpose passed to `llm.model()`, or `"none"`

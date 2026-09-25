@@ -1,10 +1,11 @@
 """OpenTelemetry for datasette-llm: a span per prompt()/chain(), API-only."""
 
 from contextlib import contextmanager
+import contextvars
 from importlib.metadata import PackageNotFoundError, version
 
 import llm as llm_library
-from opentelemetry import trace
+from opentelemetry import context, trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 try:
@@ -20,9 +21,12 @@ PURPOSE = "datasette_llm.purpose"
 ACTOR_PRESENT = "datasette_llm.actor.present"
 GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
 ERROR_TYPE = "error.type"
+OUTCOME = "datasette_llm.outcome"
 NO_PURPOSE = "none"
 # llm.PauseChain (llm>=0.32a3) suspends a turn: an outcome, not an error
 _NOT_ERRORS = getattr(llm_library, "PauseChain", ())
+# Tells exit in our own Context apart from an abandoned chain's finalizer
+_owner = contextvars.ContextVar("datasette_llm_prompt_span")
 
 
 @contextmanager
@@ -42,14 +46,30 @@ def prompt_span(kind, purpose, model_id, actor):
         # No SDK: don't attach a context an abandoned chain could leak
         yield
         return
-    with trace.use_span(
-        span, end_on_exit=True, record_exception=False, set_status_on_exception=False
-    ):
+    previous = context.get_current()
+    marker = _owner.set(None)
+    context.attach(trace.set_span_in_context(span, previous))
+    try:
+        yield
+    except GeneratorExit:
+        # The consumer stopped iterating a chain early: not an error
+        span.set_attribute(OUTCOME, "abandoned")
+        raise
+    except _NOT_ERRORS:
+        raise
+    except Exception as ex:
+        span.set_attribute(ERROR_TYPE, type(ex).__qualname__)
+        span.set_status(Status(StatusCode.ERROR))
+        raise
+    finally:
+        # Not context.detach(), which logs an error when an abandoned chain
+        # is finalized in another contextvars.Context. In our own Context,
+        # restore the previous context (even over one a hook leaked); in a
+        # finalizer's Context there is nothing of ours to restore.
         try:
-            yield
-        except _NOT_ERRORS:
-            raise
-        except Exception as ex:
-            span.set_attribute(ERROR_TYPE, type(ex).__qualname__)
-            span.set_status(Status(StatusCode.ERROR))
-            raise
+            _owner.reset(marker)
+        except ValueError:
+            pass
+        else:
+            context.attach(previous)
+        span.end()
