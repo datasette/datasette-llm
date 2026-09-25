@@ -12,7 +12,8 @@ requires-python = ">=3.10"
 dependencies = [
     "datasette>=1.0a23",
     "llm>=0.32a1",
-    "datasette-secrets"
+    "datasette-secrets",
+    "opentelemetry-api>=1.37",
 ]
 
 [dependency-groups]
@@ -20,6 +21,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "llm-echo>=0.5a0",
+    "opentelemetry-sdk>=1.37",
 ]
 
 [build-system]
