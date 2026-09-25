@@ -451,6 +451,18 @@ async def llm_default_model(datasette, purpose, actor):
     return None  # Use config defaults
 ```
 
+## OpenTelemetry
+
+Each `prompt()` and `chain()` call emits one `datasette_llm.prompt` span (scope `datasette_llm`). For a chain it covers the whole iteration and is current while you iterate, so `llm_prompt_context` hook work nests under it. If you stop iterating early, close the generator (e.g. `async with contextlib.aclosing(chain.responses()) as responses:`), otherwise the span stays current in your task until the generator is garbage-collected. Exceptions raised in your own loop body are not recorded on the span. Attributes:
+
+- `datasette_llm.kind`: `"prompt"` or `"chain"`
+- `datasette_llm.purpose`: the purpose passed to `llm.model()`, or `"none"`
+- `gen_ai.request.model`: the model ID
+- `datasette_llm.actor.present`: whether an actor was attached (never the actor itself)
+- `error.type`: the exception class name, if the call failed (`llm.PauseChain` is not an error)
+
+No prompt or response text, actor details or error messages are recorded. This plugin depends only on `opentelemetry-api`, so the span is a no-op until an OpenTelemetry SDK and tracer provider are configured. Versions of `llm` that include OpenTelemetry support add their own `chat` and `execute_tool` spans as children of this one.
+
 ## Related Plugins
 
 - **[datasette-secrets](https://github.com/datasette/datasette-secrets)**: Secure API key storage (required dependency)
