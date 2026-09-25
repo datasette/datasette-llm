@@ -9,7 +9,7 @@ from datasette.plugins import pm
 from datasette_secrets import Secret, get_secret
 
 from . import hookspecs
-from .telemetry import prompt_span
+from .telemetry import prompt_span, usage_recorder
 
 # Register our plugin hooks
 pm.add_hookspecs(hookspecs)
@@ -273,6 +273,9 @@ class WrappedAsyncChainResponse:
             stack.enter_context(
                 prompt_span("chain", self._result.purpose, self._model_id, self._actor)
             )
+            await self._result.on_response_done(
+                usage_recorder(self._result.purpose, self._model_id)
+            )
             for factory in self._context_factories:
                 if factory is not None:
                     ctx = factory(self._result)
@@ -359,6 +362,7 @@ class WrappedConversation:
             stack.enter_context(
                 prompt_span("prompt", self._purpose, self._model_id, self._actor)
             )
+            await result.on_response_done(usage_recorder(self._purpose, self._model_id))
             for factory in context_factories:
                 if factory is not None:
                     ctx = factory(result)
@@ -491,6 +495,9 @@ class WrappedAsyncModel:
             # so this span covers the hooks and the call
             stack.enter_context(
                 prompt_span("prompt", self._purpose, self._model.model_id, self._actor)
+            )
+            await result.on_response_done(
+                usage_recorder(self._purpose, self._model.model_id)
             )
             for factory in context_factories:
                 if factory is not None:
