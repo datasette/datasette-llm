@@ -87,6 +87,19 @@ class ModelNotFoundError(Exception):
     pass
 
 
+def _llm_default_model_id() -> Optional[str]:
+    """
+    The default model from LLM's own configuration - set using
+    ``llm models default <model>`` - or LLM's built-in default if
+    none has been set. Returns the canonical model ID (resolving
+    aliases), or None if that model is not installed as an async model.
+    """
+    try:
+        return llm_library.get_async_model(llm_library.get_default_model()).model_id
+    except llm_library.UnknownModelError:
+        return None
+
+
 @hookimpl
 def register_secrets(datasette):
     """Register API key secrets for all installed LLM models and config overrides."""
@@ -647,7 +660,8 @@ class LLM:
         2. llm_default_model hook
         3. Purpose-specific config: purposes.<purpose>.model
         4. Global default: default_model
-        5. Error if none configured
+        5. LLM's own default model, if available to this actor/purpose
+        6. Error if none of the above
         """
         if model_id is not None:
             return model_id
@@ -682,9 +696,20 @@ class LLM:
             model_id, _, _ = _parse_model_ref(default)
             return model_id
 
+        # Fall back to LLM's own default model - but only if it is
+        # actually usable here: installed as an async model, allowed by
+        # config/hooks, and has a key (when require_keys is on)
+        llm_default = _llm_default_model_id()
+        if llm_default is not None:
+            available = await self.models(actor=actor, purpose=purpose)
+            if llm_default in {m.model_id for m in available}:
+                return llm_default
+
         raise ModelNotFoundError(
-            "No model_id provided and no default_model configured. "
-            "Either pass a model_id or configure default_model in datasette-llm settings."
+            "No model_id provided, no default_model configured, and LLM's "
+            "default model ({}) is not available. Either pass a model_id, "
+            "configure default_model in datasette-llm settings, or run "
+            "'llm models default <model>'.".format(llm_library.get_default_model())
         )
 
     def _sort_models(self, models: List, config: dict, purpose: Optional[str]) -> List:
@@ -711,6 +736,9 @@ class LLM:
             raw = config.get("default_model")
             if raw:
                 default_model_id, _, _ = _parse_model_ref(raw)
+        if not default_model_id:
+            # No-op if it was filtered out, since add() checks availability
+            default_model_id = _llm_default_model_id()
 
         # Build a lookup from model_id to model object
         model_by_id = {m.model_id: m for m in models}
