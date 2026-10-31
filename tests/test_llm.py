@@ -1674,3 +1674,81 @@ async def test_default_model_options_overridden_by_kwargs():
     parts = (await response.messages())[0].parts
     part_types = [type(p).__name__ for p in parts]
     assert "ReasoningPart" not in part_types
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_llm_default_model():
+    import llm as llm_library
+    from datasette_llm import LLM
+
+    llm_library.set_default_model("echo")
+    llm = LLM(Datasette(memory=True))
+    model = await llm.model()
+    assert model.model_id == "echo"
+    async with llm.group() as grouped:
+        assert grouped.model_id == "echo"
+
+
+@pytest.mark.asyncio
+async def test_config_default_model_beats_llm_default():
+    import llm as llm_library
+    from datasette_llm import LLM
+
+    llm_library.set_default_model("gpt-4o")
+    datasette = Datasette(
+        memory=True,
+        config={"plugins": {"datasette-llm": {"default_model": "echo"}}},
+    )
+    model = await LLM(datasette).model()
+    assert model.model_id == "echo"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "plugin_config",
+    (
+        {"blocked_models": ["echo"]},
+        {"models": ["gpt-4o"], "require_keys": False},
+    ),
+)
+async def test_llm_default_model_respects_filters(plugin_config):
+    import llm as llm_library
+    from datasette_llm import LLM, ModelNotFoundError
+
+    llm_library.set_default_model("echo")
+    datasette = Datasette(
+        memory=True, config={"plugins": {"datasette-llm": plugin_config}}
+    )
+    with pytest.raises(ModelNotFoundError):
+        await LLM(datasette).model()
+
+
+@pytest.mark.asyncio
+async def test_llm_builtin_default_used_when_key_available(monkeypatch):
+    import llm as llm_library
+    from datasette_llm import LLM
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    model = await LLM(Datasette(memory=True)).model()
+    assert model.model_id == llm_library.DEFAULT_MODEL
+
+
+@pytest.mark.asyncio
+async def test_llm_default_model_is_first_in_models():
+    import llm as llm_library
+    from datasette_llm import LLM
+
+    llm_library.set_default_model("gpt-4o")
+    datasette = Datasette(
+        memory=True,
+        config={
+            "plugins": {
+                "datasette-llm": {
+                    "require_keys": False,
+                    "models": ["echo", "gpt-4o-mini", "gpt-4o"],
+                }
+            }
+        },
+    )
+    model_ids = [m.model_id for m in await LLM(datasette).models()]
+    assert model_ids == ["gpt-4o", "echo", "gpt-4o-mini"]
