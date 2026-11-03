@@ -9,6 +9,7 @@ from datasette.plugins import pm
 from datasette_secrets import Secret, get_secret
 
 from . import hookspecs
+from .telemetry import prompt_span
 
 # Register our plugin hooks
 pm.add_hookspecs(hookspecs)
@@ -260,8 +261,12 @@ class WrappedAsyncChainResponse:
         context_factories,
         result: PromptResult,
         group: Optional[Group] = None,
+        model_id: Optional[str] = None,
+        actor: Optional[dict] = None,
     ):
         self._chain_response = chain_response
+        self._model_id = model_id
+        self._actor = actor
         self._context_factories = context_factories
         self._result = result
         self._result.is_chain = True
@@ -276,6 +281,11 @@ class WrappedAsyncChainResponse:
             self._prepared = True
 
         async with AsyncExitStack() as stack:
+            # Entered first so it is current for the hooks and the whole
+            # iteration, and sees any exception they raise
+            stack.enter_context(
+                prompt_span("chain", self._result.purpose, self._model_id, self._actor)
+            )
             for factory in self._context_factories:
                 if factory is not None:
                     ctx = factory(self._result)
@@ -359,6 +369,9 @@ class WrappedConversation:
 
         # Enter all context managers, then execute prompt, then exit
         async with AsyncExitStack() as stack:
+            stack.enter_context(
+                prompt_span("prompt", self._purpose, self._model_id, self._actor)
+            )
             for factory in context_factories:
                 if factory is not None:
                     ctx = factory(result)
@@ -402,6 +415,8 @@ class WrappedConversation:
             context_factories=context_factories,
             result=result,
             group=self._group,
+            model_id=self._model_id,
+            actor=self._actor,
         )
 
 
@@ -485,6 +500,11 @@ class WrappedAsyncModel:
 
         # Enter all context managers, then execute prompt, then exit
         async with AsyncExitStack() as stack:
+            # prompt() awaits the response, forcing the whole model call,
+            # so this span covers the hooks and the call
+            stack.enter_context(
+                prompt_span("prompt", self._purpose, self._model.model_id, self._actor)
+            )
             for factory in context_factories:
                 if factory is not None:
                     # Each factory takes the result object and returns a context manager
