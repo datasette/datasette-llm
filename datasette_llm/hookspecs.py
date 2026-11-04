@@ -31,6 +31,8 @@ def llm_filter_models(datasette, models, actor, purpose):
     model access based on actor permissions, purpose, or other criteria.
     Can return a coroutine for async filtering.
 
+    All hooks receive the same initial list after API key filtering. Returned lists are intersected by model ID, so hooks can only narrow availability.
+
     Args:
         datasette: The Datasette instance
         models: List of model objects from llm library

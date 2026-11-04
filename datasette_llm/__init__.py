@@ -865,7 +865,12 @@ class LLM:
                 if asyncio.iscoroutine(result):
                     result = await result
                 if result is not None:
-                    all_models = result
+                    # Every hook receives the same initial list, so intersect
+                    # results to preserve restrictions from all filters.
+                    allowed_ids = {model.model_id for model in result}
+                    all_models = [
+                        model for model in all_models if model.model_id in allowed_ids
+                    ]
 
         # Sort models: default model first, then purpose-specific models
         # in config order, then global models in config order
