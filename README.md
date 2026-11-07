@@ -165,14 +165,16 @@ The `blocked_models` fields remain lists of model ID strings.
 
 ### OpenAI-compatible endpoints
 
-Add `api_base` to a model reference to use an arbitrary OpenAI-compatible Chat Completions or Responses endpoint. This requires no additional LLM plugin or changes to LLM's model configuration file.
+Add `api_base` to a model reference to use an arbitrary OpenAI-compatible Chat Completions or Responses endpoint. This requires no additional LLM plugin or changes to LLM's model configuration file. For example, use Qwen3.8 27B served by LM Studio through its local Responses API:
 
 ```yaml
 plugins:
   datasette-llm:
     default_model:
-      model: local-assistant
+      model: lmstudio-qwen
+      model_name: qwen/qwen3.8-27b
       api_base: http://localhost:1234/v1
+      responses: true
 
     models:
       - model: hosted-assistant
@@ -214,9 +216,10 @@ You can also provide an endpoint directly in Python:
 
 ```python
 model = await llm.model({
-    "model": "local-assistant",
-    "model_name": "my-tool-model",
+    "model": "lmstudio-qwen",
+    "model_name": "qwen/qwen3.8-27b",
     "api_base": "http://localhost:1234/v1",
+    "responses": True,
 })
 ```
 
