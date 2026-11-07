@@ -9,6 +9,12 @@ from datasette.plugins import pm
 from datasette_secrets import Secret, get_secret
 
 from . import hookspecs
+from .model_refs import ModelConfigurationError, ModelReference
+from .model_lookup import (
+    ModelLookup,
+    current_lookup,
+    iter_model_refs as _iter_model_refs,
+)
 
 # Register our plugin hooks
 pm.add_hookspecs(hookspecs)
@@ -29,19 +35,6 @@ KEY_OBTAIN_URLS = {
     "mistral": ("https://console.mistral.ai/api-keys/", "Get a Mistral API key"),
     "cohere": ("https://dashboard.cohere.com/api-keys", "Get a Cohere API key"),
 }
-
-
-def _parse_model_ref(ref) -> tuple:
-    """
-    Parse a model reference that's either a string or a dict.
-    Returns (model_id, key_secret_name_or_none, options_or_none).
-
-    Dict form supports:
-      {"model": "echo", "key": "MY_KEY", "options": {"thinking": true}}
-    """
-    if isinstance(ref, dict):
-        return ref["model"], ref.get("key"), ref.get("options")
-    return ref, None, None
 
 
 @dataclass
@@ -87,19 +80,6 @@ class ModelNotFoundError(Exception):
     pass
 
 
-def _llm_default_model_id() -> Optional[str]:
-    """
-    The default model from LLM's own configuration - set using
-    ``llm models default <model>`` - or LLM's built-in default if
-    none has been set. Returns the canonical model ID (resolving
-    aliases), or None if that model is not installed as an async model.
-    """
-    try:
-        return llm_library.get_async_model(llm_library.get_default_model()).model_id
-    except llm_library.UnknownModelError:
-        return None
-
-
 @hookimpl
 def register_secrets(datasette):
     """Register API key secrets for all installed LLM models and config overrides."""
@@ -107,9 +87,11 @@ def register_secrets(datasette):
     seen = set()
 
     for model in llm_library.get_models():
-        if model.needs_key and model.needs_key not in seen:
-            seen.add(model.needs_key)
+        if model.needs_key:
             key_name = f"{model.needs_key.upper()}_API_KEY"
+            if key_name in seen:
+                continue
+            seen.add(key_name)
             obtain_url, obtain_label = KEY_OBTAIN_URLS.get(
                 model.needs_key, (None, None)
             )
@@ -122,10 +104,21 @@ def register_secrets(datasette):
                 )
             )
 
+    for key_name in getattr(datasette, "_llm_inline_key_names", ()):
+        if key_name not in seen:
+            seen.add(key_name)
+            secrets.append(
+                Secret(name=key_name, description=f"Custom API key: {key_name}")
+            )
+
     # Also register any custom key names from model-ref dicts in config
     config = datasette.plugin_config("datasette-llm") or {}
     for ref in _iter_model_refs(config):
-        _, key_name, _ = _parse_model_ref(ref)
+        try:
+            key_name = ModelReference.parse(ref).key
+        except ModelConfigurationError:
+            # A typo in this plugin must not disable every plugin's secrets.
+            continue
         if key_name and key_name not in seen:
             seen.add(key_name)
             secrets.append(
@@ -138,60 +131,15 @@ def register_secrets(datasette):
     return secrets
 
 
-def _iter_model_refs(config):
-    """Yield all model references (strings or dicts) from plugin config."""
-    default = config.get("default_model")
-    if default:
-        yield default
-    for purpose_config in config.get("purposes", {}).values():
-        model = purpose_config.get("model")
-        if model:
-            yield model
-        for entry in purpose_config.get("models", []):
-            yield entry
-
-
 @hookimpl(tryfirst=True)
 def llm_filter_models(datasette, models, purpose):
-    """Apply config-based model filtering (allowlists and blocklists)."""
-    config = datasette.plugin_config("datasette-llm") or {}
-    if not config:
-        return
-
-    if purpose:
-        purpose_config = config.get("purposes", {}).get(purpose, {})
-        purpose_allowed_raw = purpose_config.get("models")
-        global_allowed = config.get("models")
-        if purpose_allowed_raw or global_allowed:
-            purpose_allowed_ids = (
-                {_parse_model_ref(entry)[0] for entry in purpose_allowed_raw}
-                if purpose_allowed_raw
-                else set()
-            )
-            # Auto-include the purpose's default model
-            purpose_default = purpose_config.get("model")
-            if purpose_default:
-                purpose_allowed_ids.add(_parse_model_ref(purpose_default)[0])
-            combined = purpose_allowed_ids | set(global_allowed or [])
-            models = [m for m in models if m.model_id in combined]
-        purpose_blocked = purpose_config.get("blocked_models")
-        if purpose_blocked:
-            models = [m for m in models if m.model_id not in purpose_blocked]
+    """Apply config filtering using the current operation's registry snapshot."""
+    active = current_lookup.get()
+    if active is not None and active[0] is datasette and active[1].purpose == purpose:
+        lookup = active[1]
     else:
-        allowed = config.get("models")
-        if allowed:
-            allowed_ids = set(allowed)
-            # Auto-include the global default model
-            global_default = config.get("default_model")
-            if global_default:
-                allowed_ids.add(_parse_model_ref(global_default)[0])
-            models = [m for m in models if m.model_id in allowed_ids]
-
-    blocked = config.get("blocked_models")
-    if blocked:
-        models = [m for m in models if m.model_id not in blocked]
-
-    return models
+        lookup = ModelLookup(datasette.plugin_config("datasette-llm") or {}, purpose)
+    return lookup.filter_config(models)
 
 
 @dataclass
@@ -524,89 +472,26 @@ class LLM:
         """Get plugin configuration."""
         return self._datasette.plugin_config("datasette-llm") or {}
 
-    def _get_purpose_key_for_model(
-        self, model_id: str, purpose: Optional[str]
-    ) -> Optional[str]:
-        """
-        Look up a key secret name for a model from purpose or default_model config.
+    def _get_purpose_key_for_model(self, model_id, purpose):
+        return ModelLookup(self._get_config(), purpose).setting(model_id, "key")
 
-        Resolution order:
-        1. Purpose's models list (dict entries with matching model)
-        2. Purpose's model default (if dict with matching model)
-        3. default_model (if dict with matching model)
-
-        Returns the secret name string, or None.
-        """
-        config = self._get_config()
-
-        if purpose:
-            purpose_config = config.get("purposes", {}).get(purpose, {})
-
-            # Check purpose models list first (most specific)
-            for entry in purpose_config.get("models", []):
-                ref_id, ref_key, _ = _parse_model_ref(entry)
-                if ref_id == model_id and ref_key:
-                    return ref_key
-
-            # Check purpose default model
-            purpose_model = purpose_config.get("model")
-            if purpose_model:
-                ref_id, ref_key, _ = _parse_model_ref(purpose_model)
-                if ref_id == model_id and ref_key:
-                    return ref_key
-
-        # Check global default_model
-        default = config.get("default_model")
-        if default:
-            ref_id, ref_key, _ = _parse_model_ref(default)
-            if ref_id == model_id and ref_key:
-                return ref_key
-
-        return None
-
-    def _get_options_for_model(
-        self, model_id: str, purpose: Optional[str]
-    ) -> Optional[dict]:
-        """
-        Look up default model options from purpose or default_model config.
-
-        Same resolution order as _get_purpose_key_for_model: purpose's
-        models list, purpose's default, then global default_model.
-        """
-        config = self._get_config()
-
-        if purpose:
-            purpose_config = config.get("purposes", {}).get(purpose, {})
-
-            for entry in purpose_config.get("models", []):
-                ref_id, _, ref_options = _parse_model_ref(entry)
-                if ref_id == model_id and ref_options:
-                    return ref_options
-
-            purpose_model = purpose_config.get("model")
-            if purpose_model:
-                ref_id, _, ref_options = _parse_model_ref(purpose_model)
-                if ref_id == model_id and ref_options:
-                    return ref_options
-
-        default = config.get("default_model")
-        if default:
-            ref_id, _, ref_options = _parse_model_ref(default)
-            if ref_id == model_id and ref_options:
-                return ref_options
-
-        return None
+    def _get_options_for_model(self, model_id, purpose):
+        return ModelLookup(self._get_config(), purpose).setting(model_id, "options")
 
     async def get_key_for_model(
-        self, model, actor: Optional[dict] = None, purpose: Optional[str] = None
+        self,
+        model,
+        actor: Optional[dict] = None,
+        purpose: Optional[str] = None,
+        key_name: Optional[str] = None,
+        _lookup=None,
     ) -> Optional[str]:
         """
         Resolve API key for a model.
 
-        Resolution order:
-        1. Purpose/config key override (from model-ref dicts)
-        2. datasette-secrets (env var DATASETTE_SECRETS_<KEY>_API_KEY or database)
-        3. llm's key resolution (keys.json, env vars like OPENAI_API_KEY)
+        Explicit names use datasette-secrets, then the same stored LLM key alias.
+        Endpoints never inherit provider credentials. Models without an explicit
+        name use the standard provider secret and LLM key/environment resolution.
 
         Args:
             model: The model object (has .needs_key, .key_env_var attributes)
@@ -616,16 +501,21 @@ class LLM:
         Returns:
             API key string, or None if no key found
         """
-        if model.needs_key is None:
-            return None
-
-        # 0. Check for purpose/config key override
-        key_override = self._get_purpose_key_for_model(model.model_id, purpose)
+        lookup = _lookup or ModelLookup(self._get_config(), purpose)
+        key_override = key_name or lookup.setting(model.model_id, "key")
+        if hasattr(model, "endpoint_reference"):
+            key_override = model.needs_key
         if key_override:
             actor_id = actor.get("id") if actor else None
             key = await get_secret(self._datasette, key_override, actor_id)
             if key:
                 return key
+            # This is an alias lookup, not explicit_key: a missing alias must
+            # never be treated as a literal credential or use a provider key.
+            return llm_library.get_key(key_alias=key_override)
+
+        if model.needs_key is None:
+            return None
 
         # 1. Try datasette-secrets
         secret_name = f"{model.needs_key.upper()}_API_KEY"
@@ -638,19 +528,29 @@ class LLM:
         return llm_library.get_key(key_alias=model.needs_key, env_var=model.key_env_var)
 
     async def model_has_key(
-        self, model, actor: Optional[dict] = None, purpose: Optional[str] = None
+        self,
+        model,
+        actor: Optional[dict] = None,
+        purpose: Optional[str] = None,
+        key_name: Optional[str] = None,
+        _lookup=None,
     ) -> bool:
         """Check if a model has a usable API key configured."""
-        if model.needs_key is None:
-            return True  # Model doesn't need a key
-        key = await self.get_key_for_model(model, actor, purpose=purpose)
-        return key is not None
+        lookup = _lookup or ModelLookup(self._get_config(), purpose)
+        key_name = key_name or lookup.setting(model.model_id, "key")
+        if model.needs_key is None and not key_name:
+            return True
+        key = await self.get_key_for_model(
+            model, actor, purpose=purpose, key_name=key_name, _lookup=lookup
+        )
+        return bool(key)
 
     async def _resolve_model_id(
         self,
         model_id: Optional[str],
         purpose: Optional[str],
         actor: Optional[dict],
+        _lookup=None,
     ) -> str:
         """
         Resolve the model ID to use.
@@ -679,7 +579,8 @@ class LLM:
                     return result
 
         # Try configuration
-        config = self._get_config()
+        lookup = _lookup or ModelLookup(self._get_config(), purpose)
+        config = lookup.config
 
         # Purpose-specific default
         if purpose:
@@ -687,21 +588,19 @@ class LLM:
             if purpose in purposes:
                 purpose_model = purposes[purpose].get("model")
                 if purpose_model:
-                    model_id, _, _ = _parse_model_ref(purpose_model)
-                    return model_id
+                    return ModelReference.parse(purpose_model).model
 
         # Global default
         default = config.get("default_model")
         if default:
-            model_id, _, _ = _parse_model_ref(default)
-            return model_id
+            return ModelReference.parse(default).model
 
         # Fall back to LLM's own default model - but only if it is
         # actually usable here: installed as an async model, allowed by
         # config/hooks, and has a key (when require_keys is on)
-        llm_default = _llm_default_model_id()
+        llm_default = lookup.llm_default_id()
         if llm_default is not None:
-            available = await self.models(actor=actor, purpose=purpose)
+            available = await self._available_models(lookup, actor, purpose)
             if llm_default in {m.model_id for m in available}:
                 return llm_default
 
@@ -712,72 +611,12 @@ class LLM:
             "'llm models default <model>'.".format(llm_library.get_default_model())
         )
 
-    def _sort_models(self, models: List, config: dict, purpose: Optional[str]) -> List:
-        """
-        Sort models by priority:
-        1. Default model (purpose-specific or global) first
-        2. Purpose-specific models list in config order
-        3. Global models list in config order
-        4. Any remaining models in their original order
-
-        Models already produced by a higher-priority tier are skipped.
-        """
-        purpose_config = config.get("purposes", {}).get(purpose, {}) if purpose else {}
-        purpose_models_list = purpose_config.get("models")
-        global_models_list = config.get("models")
-
-        # Resolve default model ID: purpose-specific, then global
-        default_model_id = None
-        if purpose:
-            raw = purpose_config.get("model")
-            if raw:
-                default_model_id, _, _ = _parse_model_ref(raw)
-        if not default_model_id:
-            raw = config.get("default_model")
-            if raw:
-                default_model_id, _, _ = _parse_model_ref(raw)
-        if not default_model_id:
-            # No-op if it was filtered out, since add() checks availability
-            default_model_id = _llm_default_model_id()
-
-        # Build a lookup from model_id to model object
-        model_by_id = {m.model_id: m for m in models}
-        available_ids = set(model_by_id.keys())
-
-        result = []
-        seen = set()
-
-        def add(model_id):
-            if model_id in available_ids and model_id not in seen:
-                seen.add(model_id)
-                result.append(model_by_id[model_id])
-
-        # 1. Default model first
-        if default_model_id:
-            add(default_model_id)
-
-        # 2. Purpose-specific models in config order
-        if purpose_models_list:
-            for entry in purpose_models_list:
-                entry_id, _, _ = _parse_model_ref(entry)
-                add(entry_id)
-
-        # 3. Global models in config order
-        if global_models_list:
-            for model_id in global_models_list:
-                add(model_id)
-
-        # 4. Any remaining models in original order
-        for m in models:
-            if m.model_id not in seen:
-                seen.add(m.model_id)
-                result.append(m)
-
-        return result
+    def _sort_models(self, models, config, purpose):
+        return ModelLookup(config, purpose).sort(models)
 
     async def model(
         self,
-        model_id: Optional[str] = None,
+        model_id: Optional[str | dict] = None,
         purpose: Optional[str] = None,
         actor: Optional[dict] = None,
     ) -> "WrappedAsyncModel":
@@ -795,14 +634,48 @@ class LLM:
         Returns:
             A WrappedAsyncModel that invokes hooks around prompts
         """
-        resolved_model_id = await self._resolve_model_id(model_id, purpose, actor)
-        model = llm_library.get_async_model(resolved_model_id)
+        inline_ref = (
+            ModelReference.parse(model_id) if isinstance(model_id, dict) else None
+        )
+        if inline_ref and inline_ref.key:
+            key_names = getattr(self._datasette, "_llm_inline_key_names", set())
+            self._datasette._llm_inline_key_names = key_names | {inline_ref.key}
+        lookup = ModelLookup(self._get_config(), purpose, inline_ref)
+        resolved_model_id = await self._resolve_model_id(
+            inline_ref.model if inline_ref else model_id, purpose, actor, _lookup=lookup
+        )
+        model = lookup.find(resolved_model_id)
+        if model is None:
+            raise ModelNotFoundError(f"Unknown model: {resolved_model_id}")
 
         # Resolve the API key for this model
-        key = await self.get_key_for_model(model, actor, purpose=purpose)
+        key_name = inline_ref.key if inline_ref else None
+        key = await self.get_key_for_model(
+            model, actor, purpose=purpose, key_name=key_name, _lookup=lookup
+        )
+        configured_key = key_name or lookup.setting(model.model_id, "key")
+        if configured_key and not key:
+            raise llm_library.NeedsKeyException(
+                f"Key '{configured_key}' for model '{model.model_id}' was not found "
+                "in datasette-secrets or LLM's stored keys"
+            )
+
+        if model.needs_key and not key and lookup.config.get("require_keys", True):
+            # Preserve LLM's actionable provider-specific missing-key message.
+            model.get_key()
+
+        available = await self._available_models(lookup, actor, purpose)
+        if model.model_id not in {m.model_id for m in available}:
+            raise ModelNotFoundError(f"Model '{model.model_id}' is not available")
+        if hasattr(model, "endpoint_reference"):
+            # Bind the literal credential to this fresh instance, including
+            # when Responses delegates to Chat Completions.
+            model.key = key
 
         # Resolve any default options configured for this model
-        options = self._get_options_for_model(resolved_model_id, purpose)
+        options = lookup.setting(model.model_id, "options")
+        if inline_ref and inline_ref.options is not None:
+            options = inline_ref.options
 
         return WrappedAsyncModel(
             model,
@@ -828,60 +701,49 @@ class LLM:
         Returns:
             List of available model objects
         """
-        # Start with all async models from llm library
-        all_models = list(llm_library.get_async_models())
-        config = self._get_config()
+        lookup = ModelLookup(self._get_config(), purpose)
+        return await self._available_models(lookup, actor, purpose)
 
-        # Filter to models with keys (if configured, default True)
-        if config.get("require_keys", True):
-            # Deduplicate key lookups - many models share the same key
-            unique_keys = {
-                model.needs_key for model in all_models if model.needs_key is not None
-            }
+    async def _available_models(self, lookup, actor, purpose):
+        all_models = list(lookup.by_id.values())
+        if lookup.config.get("require_keys", True):
             key_available = {}
-            # Pick one representative model per unique key
-            key_to_model = {}
-            for m in all_models:
-                if m.needs_key and m.needs_key not in key_to_model:
-                    key_to_model[m.needs_key] = m
-            for needs_key in unique_keys:
-                key_available[needs_key] = await self.model_has_key(
-                    key_to_model[needs_key], actor, purpose=purpose
-                )
-            all_models = [
-                m
-                for m in all_models
-                if m.needs_key is None or key_available.get(m.needs_key, False)
-            ]
+            with_keys = []
+            for model in all_models:
+                key_name = lookup.setting(model.model_id, "key")
+                cache_key = (key_name, model.needs_key, model.key_env_var)
+                if cache_key not in key_available:
+                    key_available[cache_key] = await self.model_has_key(
+                        model, actor, purpose=purpose, key_name=key_name, _lookup=lookup
+                    )
+                if key_available[cache_key]:
+                    with_keys.append(model)
+            all_models = with_keys
 
-        # Apply hook filters (may be async)
-        for result in pm.hook.llm_filter_models(
-            datasette=self._datasette,
-            models=all_models,
-            actor=actor,
-            purpose=purpose,
-        ):
-            if result is not None:
+        # Each hook sees the same initial list; intersect all restrictions.
+        token = current_lookup.set((self._datasette, lookup))
+        try:
+            for result in pm.hook.llm_filter_models(
+                datasette=self._datasette,
+                models=all_models,
+                actor=actor,
+                purpose=purpose,
+            ):
                 if asyncio.iscoroutine(result):
                     result = await result
                 if result is not None:
-                    # Every hook receives the same initial list, so intersect
-                    # results to preserve restrictions from all filters.
                     allowed_ids = {model.model_id for model in result}
                     all_models = [
                         model for model in all_models if model.model_id in allowed_ids
                     ]
-
-        # Sort models: default model first, then purpose-specific models
-        # in config order, then global models in config order
-        all_models = self._sort_models(all_models, config, purpose)
-
-        return all_models
+        finally:
+            current_lookup.reset(token)
+        return lookup.sort(all_models)
 
     @asynccontextmanager
     async def group(
         self,
-        model_id: Optional[str] = None,
+        model_id: Optional[str | dict] = None,
         purpose: Optional[str] = None,
         actor: Optional[dict] = None,
     ):
@@ -909,24 +771,9 @@ class LLM:
                     text = await response.text()
             # All responses guaranteed complete here
         """
-        # Resolve model ID
-        resolved_model_id = await self._resolve_model_id(model_id, purpose, actor)
-
-        # Create group to track this batch
-        group_obj = Group(model_id=resolved_model_id, purpose=purpose, actor=actor)
-
-        # Get the underlying model and resolve its key
-        model = llm_library.get_async_model(resolved_model_id)
-        key = await self.get_key_for_model(model, actor, purpose=purpose)
-
-        wrapped = WrappedAsyncModel(
-            model,
-            self._datasette,
-            purpose=purpose,
-            group=group_obj,
-            key=key,
-            actor=actor,
-        )
+        wrapped = await self.model(model_id, purpose=purpose, actor=actor)
+        group_obj = Group(model_id=wrapped.model_id, purpose=purpose, actor=actor)
+        wrapped._group = group_obj
 
         try:
             yield wrapped
@@ -955,5 +802,6 @@ __all__ = [
     "Group",
     "Purpose",
     "ModelNotFoundError",
+    "ModelConfigurationError",
     "get_purposes",
 ]

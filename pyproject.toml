@@ -11,7 +11,7 @@ classifiers=[
 requires-python = ">=3.11"
 dependencies = [
     "datasette>=1.0a23",
-    "llm>=0.32a1",
+    "llm>=0.37.1",
     "datasette-secrets"
 ]
 
@@ -20,6 +20,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "llm-echo>=0.5a0",
+    "httpx2-pytest>=2",
 ]
 
 [build-system]
