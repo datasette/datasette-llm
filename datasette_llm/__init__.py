@@ -9,6 +9,7 @@ from datasette.plugins import pm
 from datasette_secrets import Secret, get_secret
 
 from . import hookspecs
+from .model_refs import ModelConfigurationError, ModelReference
 
 # Register our plugin hooks
 pm.add_hookspecs(hookspecs)
@@ -31,6 +32,13 @@ KEY_OBTAIN_URLS = {
 }
 
 
+def _canonical_model_id(model_id):
+    try:
+        return llm_library.get_async_model(model_id).model_id
+    except llm_library.UnknownModelError:
+        return model_id
+
+
 def _parse_model_ref(ref) -> tuple:
     """
     Parse a model reference that's either a string or a dict.
@@ -39,9 +47,8 @@ def _parse_model_ref(ref) -> tuple:
     Dict form supports:
       {"model": "echo", "key": "MY_KEY", "options": {"thinking": true}}
     """
-    if isinstance(ref, dict):
-        return ref["model"], ref.get("key"), ref.get("options")
-    return ref, None, None
+    ref = ModelReference.parse(ref)
+    return _canonical_model_id(ref.model), ref.key, ref.options
 
 
 @dataclass
@@ -107,9 +114,11 @@ def register_secrets(datasette):
     seen = set()
 
     for model in llm_library.get_models():
-        if model.needs_key and model.needs_key not in seen:
-            seen.add(model.needs_key)
+        if model.needs_key:
             key_name = f"{model.needs_key.upper()}_API_KEY"
+            if key_name in seen:
+                continue
+            seen.add(key_name)
             obtain_url, obtain_label = KEY_OBTAIN_URLS.get(
                 model.needs_key, (None, None)
             )
@@ -120,6 +129,13 @@ def register_secrets(datasette):
                     obtain_url=obtain_url,
                     obtain_label=obtain_label,
                 )
+            )
+
+    for key_name in getattr(datasette, "_llm_inline_key_names", ()):
+        if key_name not in seen:
+            seen.add(key_name)
+            secrets.append(
+                Secret(name=key_name, description=f"Custom API key: {key_name}")
             )
 
     # Also register any custom key names from model-ref dicts in config
@@ -143,6 +159,7 @@ def _iter_model_refs(config):
     default = config.get("default_model")
     if default:
         yield default
+    yield from config.get("models", [])
     for purpose_config in config.get("purposes", {}).values():
         model = purpose_config.get("model")
         if model:
@@ -172,15 +189,23 @@ def llm_filter_models(datasette, models, purpose):
             purpose_default = purpose_config.get("model")
             if purpose_default:
                 purpose_allowed_ids.add(_parse_model_ref(purpose_default)[0])
-            combined = purpose_allowed_ids | set(global_allowed or [])
+            combined = purpose_allowed_ids | {
+                _parse_model_ref(entry)[0] for entry in global_allowed or []
+            }
+            global_default = config.get("default_model")
+            if global_default:
+                combined.add(_parse_model_ref(global_default)[0])
             models = [m for m in models if m.model_id in combined]
         purpose_blocked = purpose_config.get("blocked_models")
         if purpose_blocked:
-            models = [m for m in models if m.model_id not in purpose_blocked]
+            blocked_ids = {
+                _canonical_model_id(model_id) for model_id in purpose_blocked
+            }
+            models = [m for m in models if m.model_id not in blocked_ids]
     else:
         allowed = config.get("models")
         if allowed:
-            allowed_ids = set(allowed)
+            allowed_ids = {_parse_model_ref(entry)[0] for entry in allowed}
             # Auto-include the global default model
             global_default = config.get("default_model")
             if global_default:
@@ -189,7 +214,8 @@ def llm_filter_models(datasette, models, purpose):
 
     blocked = config.get("blocked_models")
     if blocked:
-        models = [m for m in models if m.model_id not in blocked]
+        blocked_ids = {_canonical_model_id(model_id) for model_id in blocked}
+        models = [m for m in models if m.model_id not in blocked_ids]
 
     return models
 
@@ -524,6 +550,72 @@ class LLM:
         """Get plugin configuration."""
         return self._datasette.plugin_config("datasette-llm") or {}
 
+    def _refs_for_purpose(self, purpose):
+        """Model references in key/option precedence order."""
+        config = self._get_config()
+        purpose_config = config.get("purposes", {}).get(purpose, {}) if purpose else {}
+        refs = list(purpose_config.get("models", []))
+        if purpose_config.get("model"):
+            refs.append(purpose_config["model"])
+        if config.get("default_model"):
+            refs.append(config["default_model"])
+        refs.extend(config.get("models", []))
+        return [ModelReference.parse(ref) for ref in refs]
+
+    def _get_model_setting(self, model_id, purpose, name):
+        for ref in self._refs_for_purpose(purpose):
+            if (
+                _canonical_model_id(ref.model) == model_id
+                and getattr(ref, name) is not None
+            ):
+                return getattr(ref, name)
+        return None
+
+    def _candidate_models(self, purpose, inline_ref=None):
+        """Build instance-local endpoint models alongside installed LLM models."""
+        installed = list(llm_library.get_async_models())
+        refs = [
+            ModelReference.parse(ref) for ref in _iter_model_refs(self._get_config())
+        ]
+        if inline_ref:
+            refs.append(inline_ref)
+        definitions = {}
+        for ref in refs:
+            if ref.api_base is None:
+                continue
+            previous = definitions.get(ref.model)
+            if previous and previous.endpoint_identity() != ref.endpoint_identity():
+                raise ModelConfigurationError(
+                    f"Conflicting endpoint definitions for model '{ref.model}'"
+                )
+            for lookup in (llm_library.get_model, llm_library.get_async_model):
+                try:
+                    lookup(ref.model)
+                except llm_library.UnknownModelError:
+                    continue
+                raise ModelConfigurationError(
+                    f"Endpoint model '{ref.model}' conflicts with an installed model or alias; "
+                    "choose another model ID and set model_name to the remote model ID"
+                )
+            definitions[ref.model] = ref
+
+        active = self._refs_for_purpose(purpose)
+        if inline_ref:
+            active.insert(0, inline_ref)
+        endpoints = {}
+        for ref in active:
+            if ref.api_base is None or ref.model in endpoints:
+                continue
+            key_name = self._get_purpose_key_for_model(ref.model, purpose)
+            if (
+                inline_ref
+                and inline_ref.model == ref.model
+                and inline_ref.key is not None
+            ):
+                key_name = inline_ref.key
+            endpoints[ref.model] = ref.create_model(key_name)
+        return installed + list(endpoints.values())
+
     def _get_purpose_key_for_model(
         self, model_id: str, purpose: Optional[str]
     ) -> Optional[str]:
@@ -534,35 +626,11 @@ class LLM:
         1. Purpose's models list (dict entries with matching model)
         2. Purpose's model default (if dict with matching model)
         3. default_model (if dict with matching model)
+        4. Global models list (dict entries with matching model)
 
         Returns the secret name string, or None.
         """
-        config = self._get_config()
-
-        if purpose:
-            purpose_config = config.get("purposes", {}).get(purpose, {})
-
-            # Check purpose models list first (most specific)
-            for entry in purpose_config.get("models", []):
-                ref_id, ref_key, _ = _parse_model_ref(entry)
-                if ref_id == model_id and ref_key:
-                    return ref_key
-
-            # Check purpose default model
-            purpose_model = purpose_config.get("model")
-            if purpose_model:
-                ref_id, ref_key, _ = _parse_model_ref(purpose_model)
-                if ref_id == model_id and ref_key:
-                    return ref_key
-
-        # Check global default_model
-        default = config.get("default_model")
-        if default:
-            ref_id, ref_key, _ = _parse_model_ref(default)
-            if ref_id == model_id and ref_key:
-                return ref_key
-
-        return None
+        return self._get_model_setting(model_id, purpose, "key")
 
     def _get_options_for_model(
         self, model_id: str, purpose: Optional[str]
@@ -571,42 +639,23 @@ class LLM:
         Look up default model options from purpose or default_model config.
 
         Same resolution order as _get_purpose_key_for_model: purpose's
-        models list, purpose's default, then global default_model.
+        models list, purpose's default, global default_model, then global models.
         """
-        config = self._get_config()
-
-        if purpose:
-            purpose_config = config.get("purposes", {}).get(purpose, {})
-
-            for entry in purpose_config.get("models", []):
-                ref_id, _, ref_options = _parse_model_ref(entry)
-                if ref_id == model_id and ref_options:
-                    return ref_options
-
-            purpose_model = purpose_config.get("model")
-            if purpose_model:
-                ref_id, _, ref_options = _parse_model_ref(purpose_model)
-                if ref_id == model_id and ref_options:
-                    return ref_options
-
-        default = config.get("default_model")
-        if default:
-            ref_id, _, ref_options = _parse_model_ref(default)
-            if ref_id == model_id and ref_options:
-                return ref_options
-
-        return None
+        return self._get_model_setting(model_id, purpose, "options")
 
     async def get_key_for_model(
-        self, model, actor: Optional[dict] = None, purpose: Optional[str] = None
+        self,
+        model,
+        actor: Optional[dict] = None,
+        purpose: Optional[str] = None,
+        key_name: Optional[str] = None,
     ) -> Optional[str]:
         """
         Resolve API key for a model.
 
-        Resolution order:
-        1. Purpose/config key override (from model-ref dicts)
-        2. datasette-secrets (env var DATASETTE_SECRETS_<KEY>_API_KEY or database)
-        3. llm's key resolution (keys.json, env vars like OPENAI_API_KEY)
+        Explicit names use datasette-secrets, then the same stored LLM key alias.
+        Endpoints never inherit provider credentials. Models without an explicit
+        name use the standard provider secret and LLM key/environment resolution.
 
         Args:
             model: The model object (has .needs_key, .key_env_var attributes)
@@ -616,16 +665,22 @@ class LLM:
         Returns:
             API key string, or None if no key found
         """
-        if model.needs_key is None:
-            return None
-
-        # 0. Check for purpose/config key override
-        key_override = self._get_purpose_key_for_model(model.model_id, purpose)
+        key_override = key_name or self._get_purpose_key_for_model(
+            model.model_id, purpose
+        )
+        if hasattr(model, "endpoint_reference"):
+            key_override = model.needs_key
         if key_override:
             actor_id = actor.get("id") if actor else None
             key = await get_secret(self._datasette, key_override, actor_id)
             if key:
                 return key
+            # This is an alias lookup, not explicit_key: a missing alias must
+            # never be treated as a literal credential or use a provider key.
+            return llm_library.get_key(key_alias=key_override)
+
+        if model.needs_key is None:
+            return None
 
         # 1. Try datasette-secrets
         secret_name = f"{model.needs_key.upper()}_API_KEY"
@@ -638,13 +693,23 @@ class LLM:
         return llm_library.get_key(key_alias=model.needs_key, env_var=model.key_env_var)
 
     async def model_has_key(
-        self, model, actor: Optional[dict] = None, purpose: Optional[str] = None
+        self,
+        model,
+        actor: Optional[dict] = None,
+        purpose: Optional[str] = None,
+        key_name: Optional[str] = None,
     ) -> bool:
         """Check if a model has a usable API key configured."""
-        if model.needs_key is None:
+        if (
+            model.needs_key is None
+            and not key_name
+            and not self._get_purpose_key_for_model(model.model_id, purpose)
+        ):
             return True  # Model doesn't need a key
-        key = await self.get_key_for_model(model, actor, purpose=purpose)
-        return key is not None
+        key = await self.get_key_for_model(
+            model, actor, purpose=purpose, key_name=key_name
+        )
+        return bool(key)
 
     async def _resolve_model_id(
         self,
@@ -764,8 +829,8 @@ class LLM:
 
         # 3. Global models in config order
         if global_models_list:
-            for model_id in global_models_list:
-                add(model_id)
+            for entry in global_models_list:
+                add(_parse_model_ref(entry)[0])
 
         # 4. Any remaining models in original order
         for m in models:
@@ -777,7 +842,7 @@ class LLM:
 
     async def model(
         self,
-        model_id: Optional[str] = None,
+        model_id: Optional[str | dict] = None,
         purpose: Optional[str] = None,
         actor: Optional[dict] = None,
     ) -> "WrappedAsyncModel":
@@ -795,14 +860,53 @@ class LLM:
         Returns:
             A WrappedAsyncModel that invokes hooks around prompts
         """
-        resolved_model_id = await self._resolve_model_id(model_id, purpose, actor)
-        model = llm_library.get_async_model(resolved_model_id)
+        inline_ref = (
+            ModelReference.parse(model_id) if isinstance(model_id, dict) else None
+        )
+        if inline_ref and inline_ref.key:
+            key_names = getattr(self._datasette, "_llm_inline_key_names", set())
+            self._datasette._llm_inline_key_names = key_names | {inline_ref.key}
+        resolved_model_id = await self._resolve_model_id(
+            inline_ref.model if inline_ref else model_id, purpose, actor
+        )
+        candidates = self._candidate_models(purpose, inline_ref)
+        by_id = {model.model_id: model for model in candidates}
+        model = by_id.get(resolved_model_id)
+        if model is None:
+            try:
+                canonical_id = llm_library.get_async_model(resolved_model_id).model_id
+            except llm_library.UnknownModelError:
+                raise ModelNotFoundError(
+                    f"Unknown model: {resolved_model_id}"
+                ) from None
+            model = by_id[canonical_id]
 
         # Resolve the API key for this model
-        key = await self.get_key_for_model(model, actor, purpose=purpose)
+        key_name = inline_ref.key if inline_ref else None
+        key = await self.get_key_for_model(
+            model, actor, purpose=purpose, key_name=key_name
+        )
+        configured_key = key_name or self._get_purpose_key_for_model(
+            model.model_id, purpose
+        )
+        if configured_key and not key:
+            raise llm_library.NeedsKeyException(
+                f"Key '{configured_key}' for model '{model.model_id}' was not found "
+                "in datasette-secrets or LLM's stored keys"
+            )
+
+        available = await self._available_models(candidates, actor, purpose, inline_ref)
+        if model.model_id not in {m.model_id for m in available}:
+            raise ModelNotFoundError(f"Model '{model.model_id}' is not available")
+        if hasattr(model, "endpoint_reference"):
+            # Bind the literal credential to this fresh instance, including
+            # when Responses delegates to Chat Completions.
+            model.key = key
 
         # Resolve any default options configured for this model
-        options = self._get_options_for_model(resolved_model_id, purpose)
+        options = self._get_options_for_model(model.model_id, purpose)
+        if inline_ref and inline_ref.options is not None:
+            options = inline_ref.options
 
         return WrappedAsyncModel(
             model,
@@ -828,31 +932,33 @@ class LLM:
         Returns:
             List of available model objects
         """
-        # Start with all async models from llm library
-        all_models = list(llm_library.get_async_models())
+        all_models = self._candidate_models(purpose)
+        return await self._available_models(all_models, actor, purpose)
+
+    async def _available_models(self, all_models, actor, purpose, inline_ref=None):
         config = self._get_config()
 
         # Filter to models with keys (if configured, default True)
         if config.get("require_keys", True):
-            # Deduplicate key lookups - many models share the same key
-            unique_keys = {
-                model.needs_key for model in all_models if model.needs_key is not None
-            }
+            # Models from the same provider can use different named keys.
             key_available = {}
-            # Pick one representative model per unique key
-            key_to_model = {}
-            for m in all_models:
-                if m.needs_key and m.needs_key not in key_to_model:
-                    key_to_model[m.needs_key] = m
-            for needs_key in unique_keys:
-                key_available[needs_key] = await self.model_has_key(
-                    key_to_model[needs_key], actor, purpose=purpose
-                )
-            all_models = [
-                m
-                for m in all_models
-                if m.needs_key is None or key_available.get(m.needs_key, False)
-            ]
+            with_keys = []
+            for model in all_models:
+                key_name = self._get_purpose_key_for_model(model.model_id, purpose)
+                if (
+                    inline_ref
+                    and _canonical_model_id(inline_ref.model) == model.model_id
+                    and inline_ref.key
+                ):
+                    key_name = inline_ref.key
+                cache_key = (key_name, model.needs_key, model.key_env_var)
+                if cache_key not in key_available:
+                    key_available[cache_key] = await self.model_has_key(
+                        model, actor, purpose=purpose, key_name=key_name
+                    )
+                if key_available[cache_key]:
+                    with_keys.append(model)
+            all_models = with_keys
 
         # Apply hook filters (may be async)
         for result in pm.hook.llm_filter_models(
@@ -881,7 +987,7 @@ class LLM:
     @asynccontextmanager
     async def group(
         self,
-        model_id: Optional[str] = None,
+        model_id: Optional[str | dict] = None,
         purpose: Optional[str] = None,
         actor: Optional[dict] = None,
     ):
@@ -909,24 +1015,9 @@ class LLM:
                     text = await response.text()
             # All responses guaranteed complete here
         """
-        # Resolve model ID
-        resolved_model_id = await self._resolve_model_id(model_id, purpose, actor)
-
-        # Create group to track this batch
-        group_obj = Group(model_id=resolved_model_id, purpose=purpose, actor=actor)
-
-        # Get the underlying model and resolve its key
-        model = llm_library.get_async_model(resolved_model_id)
-        key = await self.get_key_for_model(model, actor, purpose=purpose)
-
-        wrapped = WrappedAsyncModel(
-            model,
-            self._datasette,
-            purpose=purpose,
-            group=group_obj,
-            key=key,
-            actor=actor,
-        )
+        wrapped = await self.model(model_id, purpose=purpose, actor=actor)
+        group_obj = Group(model_id=wrapped.model_id, purpose=purpose, actor=actor)
+        wrapped._group = group_obj
 
         try:
             yield wrapped
@@ -955,5 +1046,6 @@ __all__ = [
     "Group",
     "Purpose",
     "ModelNotFoundError",
+    "ModelConfigurationError",
     "get_purposes",
 ]
