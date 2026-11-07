@@ -1,12 +1,9 @@
+from copy import copy
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 import llm
-from llm.default_plugins.openai_models import (
-    AsyncChat,
-    AsyncResponses,
-    _partition_tools,
-)
+from llm.default_plugins.openai_models import AsyncChat, AsyncResponses
 
 
 class ModelConfigurationError(ValueError):
@@ -40,7 +37,9 @@ class ModelReference:
         unknown = value.keys() - cls.__dataclass_fields__.keys()
         if unknown:
             raise ModelConfigurationError(
-                "Unknown model reference fields: {}".format(", ".join(sorted(unknown)))
+                "Unknown model reference fields: {}".format(
+                    ", ".join(sorted(map(str, unknown)))
+                )
             )
         for name in ("model", "key", "api_base", "model_name"):
             if name in value and (
@@ -122,8 +121,13 @@ class ModelReference:
 
 class _EndpointCredentials:
     async def execute(self, prompt, stream, response, conversation=None, key=None):
-        async for event in super().execute(
-            prompt, stream and self.can_stream, response, conversation, key
+        # Bind a literal credential on an execution-local model. LLM's own
+        # Responses->Chat routing propagates model.key to its delegated model.
+        # A dummy credential prevents that path from consulting provider keys.
+        bound = copy(self)
+        bound.key = self.get_key(key) if self.needs_key else "DUMMY_KEY"
+        async for event in super(_EndpointCredentials, bound).execute(
+            prompt, stream and self.can_stream, response, conversation, bound.key
         ):
             yield event
 
@@ -143,19 +147,4 @@ class EndpointAsyncChat(_EndpointCredentials, AsyncChat):
 
 
 class EndpointAsyncResponses(_EndpointCredentials, AsyncResponses):
-    async def execute(self, prompt, stream, response, conversation=None, key=None):
-        if getattr(prompt.options, "chat_completions", False):
-            # Keep endpoint credential isolation when opting out of Responses.
-            chat = EndpointAsyncChat(**self._delegate_chat_kwargs())
-            chat.needs_key = self.needs_key
-            chat.key_env_var = None
-            _partition_tools(chat, prompt.tools)
-            async for event in chat.execute(
-                prompt, stream, response, conversation, key
-            ):
-                yield event
-        else:
-            async for event in super().execute(
-                prompt, stream, response, conversation, key
-            ):
-                yield event
+    pass

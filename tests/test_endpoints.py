@@ -520,8 +520,10 @@ async def test_conflicting_endpoint_ids(change):
     client = make_llm(
         default_model=endpoint(), purposes={"agent": {"model": endpoint(**change)}}
     )
+    assert "local" not in {model.model_id for model in await client.models()}
+    assert (await client.model("echo")).model_id == "echo"
     with pytest.raises(ModelConfigurationError, match="Conflicting.*local"):
-        await client.models()
+        await client.model()
     with pytest.raises(ModelConfigurationError, match="Conflicting.*local"):
         await make_llm(models=[endpoint()]).model(endpoint(**change))
 
@@ -617,6 +619,30 @@ async def test_listed_responses_model_explicit_key_in_chat_fallback(
     assert await response.text() == "Hello"
     assert (
         httpx2_mock.get_requests()[0].headers["authorization"] == "Bearer explicit-key"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key_name", [None, "chosen"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_native_chat_fallback_does_not_reinterpret_literal_keys(
+    httpx2_mock, monkeypatch, key_name, stream
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "do-not-send-env")
+    store_keys(
+        openai="do-not-send-provider",
+        DUMMY_KEY="do-not-send-dummy-alias",
+        chosen="OPENAI_API_KEY",
+        OPENAI_API_KEY="do-not-send-literal-alias",
+    )
+    ref = endpoint(responses=True, **({"key": key_name} if key_name else {}))
+    model = await make_llm(default_model=ref).model()
+    add_response(httpx2_mock, False, stream=stream)
+    response = await model.prompt("Hi", stream=stream, chat_completions=True)
+    assert await response.text() == "Hello"
+    expected = "OPENAI_API_KEY" if key_name else "DUMMY_KEY"
+    assert (
+        httpx2_mock.get_requests()[0].headers["authorization"] == f"Bearer {expected}"
     )
 
 

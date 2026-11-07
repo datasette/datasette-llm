@@ -13,6 +13,8 @@ This plugin provides a standard interface for Datasette plugins to use LLM model
 - **API key management**: Integration with [datasette-secrets](https://github.com/datasette/datasette-secrets) for secure key storage
 - **Hooks for extensibility**: Track usage, enforce policies, implement accounting
 
+See the [unreleased changes and compatibility notes](CHANGELOG.md#unreleased) before upgrading.
+
 ## Installation
 
 Install this plugin in the same environment as Datasette:
@@ -77,7 +79,7 @@ plugins:
 
 ### Model references with custom API keys and options
 
-Anywhere a model name string is accepted in configuration (`default_model`, `purposes.<name>.model`, or entries in global or purpose-specific `models` lists), you can use a dictionary instead. Dictionaries are also accepted by `llm.model()` and `llm.group()`.
+Anywhere a model name string is accepted in configuration (`default_model`, `purposes.<name>.model`, or entries in global or purpose-specific `models` lists), you can use a dictionary instead. Use global or purpose-specific `endpoints` lists to register additional endpoint dictionaries without enabling an allowlist. Dictionaries are also accepted by `llm.model()` and `llm.group()`.
 
 The dictionary supports these fields:
 
@@ -156,8 +158,10 @@ The configured key name and default options are selected from the first matching
 1. A dictionary passed directly to `llm.model()` or `llm.group()`
 2. A matching dictionary in the purpose's `models` list
 3. The purpose's default `model` dictionary
-4. The global `default_model` dictionary
-5. A matching dictionary in the global `models` list
+4. A matching dictionary in the purpose's `endpoints` list
+5. The global `default_model` dictionary
+6. A matching dictionary in the global `models` list
+7. A matching dictionary in the global `endpoints` list
 
 For installed models without an explicit key name, standard provider key resolution applies: datasette-secrets (`<PROVIDER>_API_KEY`), then LLM's stored provider key or environment variable.
 
@@ -170,13 +174,13 @@ Add `api_base` to a model reference to use an arbitrary OpenAI-compatible Chat C
 ```yaml
 plugins:
   datasette-llm:
-    default_model:
-      model: lmstudio-qwen
-      model_name: qwen/qwen3.8-27b
-      api_base: http://localhost:1234/v1
-      responses: true
+    default_model: lmstudio-qwen
 
-    models:
+    endpoints:
+      - model: lmstudio-qwen
+        model_name: qwen/qwen3.8-27b
+        api_base: http://localhost:1234/v1
+        responses: true
       - model: hosted-assistant
         model_name: organization/assistant
         api_base: https://models.example.com/v1
@@ -189,6 +193,8 @@ plugins:
       sql-assistant:
         model: hosted-assistant
 ```
+
+`endpoints` registers models without restricting the installed models available to Datasette. The `models` setting remains an allowlist: if you configure it, registered endpoints must be allowed there or selected as the configured default. You can also place an endpoint dictionary directly in a default or a `models` list when those filtering semantics are intended. A purpose-specific `endpoints` list registers models only for that purpose.
 
 `model` is the local ID used by Datasette model pickers, hooks, allowlists and blocklists. `model_name` is the ID sent to the endpoint and defaults to `model`. Use distinct local IDs for different endpoints serving the same remote model, or to avoid a collision with an installed model or alias.
 
@@ -208,9 +214,11 @@ async for response in chain.responses():
 
 The endpoint must support the selected protocol and any capabilities you use. Additional endpoint fields follow LLM's configuration conventions: `supports_tools` and `can_stream` default to true; `supports_schema`, `vision`, `audio` and `reasoning` default to false. Set `can_stream: false` for a server that requires non-streaming requests. `headers` accepts a dictionary of extra HTTP headers. Reasoning summaries are only requested when explicitly selected through prompt options.
 
+Put credentials in `key`, using a Datasette secret or stored LLM key alias. Do not put credentials such as `Authorization: Bearer ...` in `headers`: those values can be visible to anonymous users at `/-/config.json`.
+
 An endpoint without `key` is treated as unauthenticated and remains available with `require_keys: true`. It never receives the default OpenAI key. To use an existing stored LLM key, set `key` to its alias, such as `openrouter` after running `llm keys set openrouter`. Setting `key: openai` deliberately selects that named key; it is never selected implicitly. Datasette-secrets takes precedence over the stored LLM alias.
 
-Definitions in the global default or global `models` list are available globally. Definitions appearing only under a purpose are available for that purpose. A model defined in the active configuration can be selected by its local ID, including from an `llm_default_model` hook. Repeated definitions of an ID must agree on endpoint, remote model name, protocol and capabilities; keys and prompt options can vary by purpose. Invalid definitions and conflicting or installed IDs raise `ModelConfigurationError`.
+Definitions in global `endpoints`, the global default or the global `models` list are available globally. Definitions appearing only under a purpose are available for that purpose. A model defined in the active configuration can be selected by its local ID, including from an `llm_default_model` hook. Repeated definitions of an ID must agree on endpoint, remote model name, protocol and capabilities; keys and prompt options can vary by purpose. Invalid fields raise `ModelConfigurationError` during model lookup but do not prevent other plugins from using datasette-secrets. Conflicting endpoints, including IDs that clash with an installed alias, are omitted from listings; selecting that endpoint raises `ModelConfigurationError`. Other installed models remain usable.
 
 You can also provide an endpoint directly in Python:
 
