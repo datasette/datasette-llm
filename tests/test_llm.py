@@ -1752,3 +1752,97 @@ async def test_llm_default_model_is_first_in_models():
     )
     model_ids = [m.model_id for m in await LLM(datasette).models()]
     assert model_ids == ["gpt-4o", "echo", "gpt-4o-mini"]
+
+
+class _RecordHookPrompts:
+    "Plugin recording the prompt passed to each llm_prompt_context call."
+
+    __name__ = "record_hook_prompts"
+
+    def __init__(self):
+        self.prompts = []
+
+    @hookimpl
+    def llm_prompt_context(self, datasette, model_id, prompt, purpose):
+        self.prompts.append(prompt)
+
+
+@pytest.fixture
+def hook_prompts():
+    plugin = _RecordHookPrompts()
+    pm.register(plugin)
+    try:
+        yield plugin.prompts
+    finally:
+        pm.unregister(plugin)
+
+
+@pytest.mark.asyncio
+async def test_hook_prompt_is_last_user_message_for_prompt(hook_prompts):
+    import llm
+    from datasette_llm import LLM
+
+    model = await LLM(Datasette(memory=True)).model("echo")
+    response = await model.prompt(
+        messages=[llm.user("First"), llm.assistant("Reply"), llm.user("Second")]
+    )
+    await response.text()
+    assert hook_prompts == ["Second"]
+
+
+@pytest.mark.asyncio
+async def test_hook_prompt_is_last_user_message_for_chain(hook_prompts):
+    import llm
+    from datasette_llm import LLM
+
+    model = await LLM(Datasette(memory=True)).model("echo")
+    chain_response = model.chain(
+        messages=[llm.user("First"), llm.assistant("Reply"), llm.user("Second")]
+    )
+    async for response in chain_response.responses():
+        await response.text()
+    assert hook_prompts == ["Second"]
+
+
+@pytest.mark.asyncio
+async def test_hook_prompt_is_last_user_message_for_conversation(hook_prompts):
+    import llm
+    from datasette_llm import LLM
+
+    model = await LLM(Datasette(memory=True)).model("echo")
+    response = await model.conversation().prompt(messages=[llm.user("Only")])
+    await response.text()
+    assert hook_prompts == ["Only"]
+
+
+@pytest.mark.asyncio
+async def test_hook_prompt_text_wins_over_messages(hook_prompts):
+    "Prompt text is the new input: llm appends it after messages=."
+    import llm
+    from datasette_llm import LLM
+
+    model = await LLM(Datasette(memory=True)).model("echo")
+    response = await model.prompt("New input", messages=[llm.user("Earlier")])
+    await response.text()
+    assert hook_prompts == ["New input"]
+
+
+def test_hook_prompt_text():
+    import llm
+    from llm.parts import Message, TextPart, ToolCallPart
+    from datasette_llm import _hook_prompt_text
+
+    assert _hook_prompt_text("hi", None) == "hi"
+    assert _hook_prompt_text(None, None) is None
+    assert _hook_prompt_text(None, []) is None
+    # Text parts of the final user message are joined
+    two_parts = Message(
+        role="user", parts=[TextPart(text="Question"), TextPart(text="\n\nNote")]
+    )
+    assert _hook_prompt_text(None, [two_parts]) == "Question\n\nNote"
+    # No new user input: the history ends in an assistant message
+    pending = Message(
+        role="assistant",
+        parts=[ToolCallPart(name="example", arguments={}, tool_call_id="1")],
+    )
+    assert _hook_prompt_text(None, [llm.user("Earlier"), pending]) is None

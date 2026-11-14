@@ -78,7 +78,9 @@ def llm_prompt_context(datasette, model_id, prompt, purpose, actor):
     Args:
         datasette: The Datasette instance
         model_id: The ID of the model being used (e.g., "gpt-5.4-mini", "echo")
-        prompt: The prompt text being sent
+        prompt: The prompt text being sent. If the caller passed messages=
+                with no prompt text this is the text of the final message,
+                provided that is a user message - otherwise None
         purpose: Optional string identifying what this prompt is for
                  (e.g., "enrichments", "sql-assistant")
         actor: Optional actor dict identifying who is making the request

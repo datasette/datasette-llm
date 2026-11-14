@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, TYPE_CHECKING
 
 import llm as llm_library
+from llm.parts import TextPart
 from datasette import hookimpl
 from datasette.plugins import pm
 from datasette_secrets import Secret, get_secret
@@ -158,6 +159,26 @@ class Group:
     _responses: List[llm_library.AsyncResponse] = field(default_factory=list)
 
 
+def _hook_prompt_text(prompt_text, messages):
+    """The text passed to the llm_prompt_context hook as prompt.
+
+    A caller can supply its whole input as messages= with no prompt
+    text. Hooks should still see the new input, so use the text of the
+    final message if it is a user message. A history that ends any
+    other way - such as a chain resumed at unresolved tool calls - has
+    no new user input, so there is no prompt text.
+    """
+    if prompt_text or not messages:
+        return prompt_text
+    last = messages[-1]
+    if getattr(last, "role", None) != "user":
+        return None
+    text = "".join(
+        part.text for part in last.parts if isinstance(part, TextPart) and part.text
+    )
+    return text or None
+
+
 @dataclass
 class PromptResult:
     """
@@ -289,7 +310,9 @@ class WrappedConversation:
         caller_options = kwargs.get("options") or {}
         return {**kwargs, "options": {**self._options, **caller_options}}
 
-    async def prompt(self, prompt_text: str, **kwargs) -> llm_library.AsyncResponse:
+    async def prompt(
+        self, prompt_text: Optional[str] = None, **kwargs
+    ) -> llm_library.AsyncResponse:
         """
         Execute a conversation prompt with hook context managers wrapping the call.
         """
@@ -297,7 +320,7 @@ class WrappedConversation:
         context_factories = pm.hook.llm_prompt_context(
             datasette=self._datasette,
             model_id=self._model_id,
-            prompt=prompt_text,
+            prompt=_hook_prompt_text(prompt_text, kwargs.get("messages")),
             purpose=self._purpose,
             actor=self._actor,
         )
@@ -326,7 +349,7 @@ class WrappedConversation:
 
         return response
 
-    def chain(self, prompt_text: str, **kwargs):
+    def chain(self, prompt_text: Optional[str] = None, **kwargs):
         """
         Execute a conversation chain with tool support.
 
@@ -337,7 +360,7 @@ class WrappedConversation:
         context_factories = pm.hook.llm_prompt_context(
             datasette=self._datasette,
             model_id=self._model_id,
-            prompt=prompt_text,
+            prompt=_hook_prompt_text(prompt_text, kwargs.get("messages")),
             purpose=self._purpose,
             actor=self._actor,
         )
@@ -401,7 +424,7 @@ class WrappedAsyncModel:
             options=self._options,
         )
 
-    def chain(self, prompt_text: str, **kwargs):
+    def chain(self, prompt_text: Optional[str] = None, **kwargs):
         """
         Execute a chain with tool support via a wrapped conversation.
 
@@ -409,7 +432,9 @@ class WrappedAsyncModel:
         """
         return self.conversation().chain(prompt_text, **kwargs)
 
-    async def prompt(self, prompt_text: str, **kwargs) -> llm_library.AsyncResponse:
+    async def prompt(
+        self, prompt_text: Optional[str] = None, **kwargs
+    ) -> llm_library.AsyncResponse:
         """
         Execute a prompt with hook context managers wrapping the call.
 
@@ -423,7 +448,7 @@ class WrappedAsyncModel:
         context_factories = pm.hook.llm_prompt_context(
             datasette=self._datasette,
             model_id=self._model.model_id,
-            prompt=prompt_text,
+            prompt=_hook_prompt_text(prompt_text, kwargs.get("messages")),
             purpose=self._purpose,
             actor=self._actor,
         )

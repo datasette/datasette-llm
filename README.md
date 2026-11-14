@@ -430,6 +430,12 @@ def llm_prompt_context(datasette, model_id, prompt, purpose, actor):
     return wrapper
 ```
 
+`prompt` is the text of the new input. When a caller passes its whole input
+as `messages=` with no prompt text, `prompt` is the text of the final
+message, provided that is a user message. It is `None` when there is no new
+user input, for example a chain resumed from a history that ends in
+unresolved tool calls.
+
 `result.response` continues to expose the first response, while
 `result.responses` contains all responses seen so far. The
 `await result.on_response_done(callback)` helper attaches a callback to all
