@@ -7,6 +7,7 @@ from datasette.app import Datasette
 from datasette.plugins import pm
 from datasette_secrets import Secret, get_secret, get_secrets
 
+import datasette_llm
 from datasette_llm import LLM, ModelConfigurationError
 
 
@@ -254,3 +255,79 @@ async def test_missing_provider_key_has_actionable_error(operation):
                 pytest.fail("Missing key accepted")
         else:
             await instance.model("gpt-4o-mini" if operation == "model" else None)
+
+
+@pytest.fixture
+def secrets_read(monkeypatch):
+    "Names of the secrets datasette-llm asks datasette-secrets for."
+    names = []
+    original = datasette_llm.get_secret
+
+    async def recording(datasette, secret_name, actor_id=None):
+        names.append(secret_name)
+        return await original(datasette, secret_name, actor_id)
+
+    monkeypatch.setattr(datasette_llm, "get_secret", recording)
+    return names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["model", "default", "llm-default", "group"])
+async def test_model_reads_only_its_own_secret(monkeypatch, secrets_read, operation):
+    """Selecting a model must not read the secrets of other providers:
+    datasette-secrets records each read as a use of that secret."""
+    monkeypatch.setenv("DATASETTE_SECRETS_ECHO-NEEDS-KEY_API_KEY", "echo-value")
+    monkeypatch.setenv("DATASETTE_SECRETS_OPENAI_API_KEY", "openai-value")
+    if operation == "llm-default":
+        llm.set_default_model("echo-needs-key")
+        instance = client()
+    else:
+        instance = client(default_model="echo-needs-key")
+    if operation == "group":
+        async with instance.group() as model:
+            assert model.model_id == "echo-needs-key"
+    else:
+        argument = "echo-needs-key" if operation == "model" else None
+        assert (await instance.model(argument)).model_id == "echo-needs-key"
+    assert set(secrets_read) == {"ECHO-NEEDS-KEY_API_KEY"}
+
+
+@pytest.mark.asyncio
+async def test_keyless_model_reads_no_secrets(monkeypatch, secrets_read):
+    monkeypatch.setenv("DATASETTE_SECRETS_OPENAI_API_KEY", "openai-value")
+    assert (await client().model("echo")).model_id == "echo"
+    assert secrets_read == []
+
+
+@pytest.mark.asyncio
+async def test_model_with_its_own_key_is_selectable():
+    "A model whose instance carries a key needs no stored key to be selected."
+
+    class SyncModel(llm.KeyModel):
+        model_id = "own-key"
+        needs_key = "own"
+        key = "baked-in"
+
+        def execute(self, prompt, stream, response, conversation, key):
+            yield key
+
+    class AsyncModel(llm.AsyncKeyModel):
+        model_id = "own-key"
+        needs_key = "own"
+        key = "baked-in"
+
+        async def execute(self, prompt, stream, response, conversation, key):
+            yield key
+
+    class Plugin:
+        @llm.hookimpl
+        def register_models(self, register):
+            register(SyncModel(), AsyncModel())
+
+    plugin = Plugin()
+    llm.plugins.pm.register(plugin)
+    try:
+        model = await client().model("own-key")
+        assert await (await model.prompt("hi")).text() == "baked-in"
+    finally:
+        llm.plugins.pm.unregister(plugin)

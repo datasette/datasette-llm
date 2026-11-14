@@ -599,10 +599,10 @@ class LLM:
         # actually usable here: installed as an async model, allowed by
         # config/hooks, and has a key (when require_keys is on)
         llm_default = lookup.llm_default_id()
-        if llm_default is not None:
-            available = await self._available_models(lookup, actor, purpose)
-            if llm_default in {m.model_id for m in available}:
-                return llm_default
+        if llm_default is not None and await self._is_available(
+            lookup, lookup.by_id.get(llm_default), actor, purpose
+        ):
+            return llm_default
 
         raise ModelNotFoundError(
             "No model_id provided, no default_model configured, and LLM's "
@@ -664,8 +664,10 @@ class LLM:
             # Preserve LLM's actionable provider-specific missing-key message.
             model.get_key()
 
-        available = await self._available_models(lookup, actor, purpose)
-        if model.model_id not in {m.model_id for m in available}:
+        # The key for this model is settled above. Check the filters against
+        # this model alone: building the full list of available models would
+        # read every other provider's secret on each call.
+        if not await self._filter_models(lookup, [model], actor, purpose):
             raise ModelNotFoundError(f"Model '{model.model_id}' is not available")
         if hasattr(model, "endpoint_reference"):
             # Bind the literal credential to this fresh instance, including
@@ -720,12 +722,18 @@ class LLM:
                     with_keys.append(model)
             all_models = with_keys
 
+        return lookup.sort(
+            await self._filter_models(lookup, all_models, actor, purpose)
+        )
+
+    async def _filter_models(self, lookup, models, actor, purpose):
+        """Apply configuration and llm_filter_models hooks to a list of models."""
         # Each hook sees the same initial list; intersect all restrictions.
         token = current_lookup.set((self._datasette, lookup))
         try:
             for result in pm.hook.llm_filter_models(
                 datasette=self._datasette,
-                models=all_models,
+                models=models,
                 actor=actor,
                 purpose=purpose,
             ):
@@ -733,12 +741,22 @@ class LLM:
                     result = await result
                 if result is not None:
                     allowed_ids = {model.model_id for model in result}
-                    all_models = [
-                        model for model in all_models if model.model_id in allowed_ids
+                    models = [
+                        model for model in models if model.model_id in allowed_ids
                     ]
         finally:
             current_lookup.reset(token)
-        return lookup.sort(all_models)
+        return models
+
+    async def _is_available(self, lookup, model, actor, purpose):
+        """Whether one model can be selected, reading only that model's key."""
+        if model is None:
+            return False
+        if lookup.config.get("require_keys", True) and not await self.model_has_key(
+            model, actor, purpose=purpose, _lookup=lookup
+        ):
+            return False
+        return bool(await self._filter_models(lookup, [model], actor, purpose))
 
     @asynccontextmanager
     async def group(
