@@ -56,7 +56,16 @@ class ModelLookup:
 
         self.errors = {}
         definitions = {}
-        all_refs = [ModelReference.parse(ref) for ref in iter_model_refs(config)]
+        # References outside this lookup's scope - those under other
+        # purposes - are only read to spot conflicting endpoint IDs. An
+        # invalid one is reported by the lookups that use it, and must
+        # not fail this one. Invalid references in scope raised above.
+        all_refs = []
+        for ref in iter_model_refs(config):
+            try:
+                all_refs.append(ModelReference.parse(ref))
+            except ModelConfigurationError:
+                continue
         if inline_ref:
             all_refs.append(inline_ref)
         for ref in all_refs:

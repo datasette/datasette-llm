@@ -14,6 +14,6 @@
 - An explicit `key` on an installed model no longer falls back to the provider's default credential. If that name is missing from datasette-secrets and LLM's stored keys, selecting the model raises `NeedsKeyException`, and it is omitted from listings when `require_keys` is true. Remove `key` to restore normal provider key resolution.
 - Allowlists, blocklists and `llm_filter_models` hooks now apply to `model()` and `group()`, including explicit IDs and configured defaults. Selecting an excluded model raises `ModelNotFoundError`.
 - A purpose's model allowlist also includes the global `default_model`. Global and purpose lists remain combined, and blocklists and filter hooks can still exclude those defaults.
-- Model-reference dictionaries now reject unknown fields and explicit `key: null` or `options: null` values with `ModelConfigurationError`. Omit those optional fields instead. Invalid references are ignored while registering secrets so they cannot disable other plugins' secrets.
+- Model-reference dictionaries now reject unknown fields and explicit `key: null` or `options: null` values with `ModelConfigurationError`. Omit those optional fields instead. An invalid reference under a purpose only affects lookups for that purpose. Invalid references are ignored while registering secrets so they cannot disable other plugins' secrets.
 - Unknown model IDs raise `datasette_llm.ModelNotFoundError` instead of `llm.UnknownModelError`.
 - This release requires LLM 0.37.1 or newer.

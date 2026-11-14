@@ -359,3 +359,22 @@ async def test_empty_config_values_are_treated_as_absent(config):
         assert "echo" in {model.model_id for model in models}
         assert (await instance.model("echo", purpose=purpose)).model_id == "echo"
     await get_secrets(instance._datasette)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("location", ["model", "models", "endpoints"])
+async def test_invalid_purpose_reference_only_affects_that_purpose(location):
+    invalid_ref = {"model": "echo", "temprature": 0.2}
+    instance = client(
+        purposes={
+            "broken": {location: invalid_ref if location == "model" else [invalid_ref]}
+        }
+    )
+    for purpose in (None, "agent"):
+        models = await instance.models(purpose=purpose)
+        assert "echo" in {model.model_id for model in models}
+        assert (await instance.model("echo", purpose=purpose)).model_id == "echo"
+    with pytest.raises(ModelConfigurationError, match="temprature"):
+        await instance.models(purpose="broken")
+    with pytest.raises(ModelConfigurationError, match="temprature"):
+        await instance.model("echo", purpose="broken")
