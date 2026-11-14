@@ -583,12 +583,9 @@ class LLM:
         config = lookup.config
 
         # Purpose-specific default
-        if purpose:
-            purposes = config.get("purposes", {})
-            if purpose in purposes:
-                purpose_model = purposes[purpose].get("model")
-                if purpose_model:
-                    return ModelReference.parse(purpose_model).model
+        purpose_model = lookup.purpose_config.get("model")
+        if purpose_model:
+            return ModelReference.parse(purpose_model).model
 
         # Global default
         default = config.get("default_model")

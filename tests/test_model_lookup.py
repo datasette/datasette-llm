@@ -331,3 +331,31 @@ async def test_model_with_its_own_key_is_selectable():
         assert await (await model.prompt("hi")).text() == "baked-in"
     finally:
         llm.plugins.pm.unregister(plugin)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"models": None},
+        {"endpoints": None},
+        {"blocked_models": None},
+        {"purposes": None},
+        {"purposes": {"agent": None}},
+        {
+            "purposes": {
+                "agent": {"models": None, "endpoints": None, "blocked_models": None}
+            }
+        },
+    ],
+)
+async def test_empty_config_values_are_treated_as_absent(config):
+    """A YAML key with no value - a list with every entry commented out -
+    is None. It must behave like a missing key, for this plugin and for
+    every plugin's secrets."""
+    instance = client(**config)
+    for purpose in (None, "agent"):
+        models = await instance.models(purpose=purpose)
+        assert "echo" in {model.model_id for model in models}
+        assert (await instance.model("echo", purpose=purpose)).model_id == "echo"
+    await get_secrets(instance._datasette)

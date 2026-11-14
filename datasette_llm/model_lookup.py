@@ -9,15 +9,18 @@ current_lookup = ContextVar("datasette_llm_model_lookup", default=None)
 
 
 def iter_model_refs(config):
+    # A YAML key left with no value, such as a `models:` list with every
+    # entry commented out, is None. Treat that as empty throughout.
     if config.get("default_model"):
         yield config["default_model"]
-    yield from config.get("models", [])
-    yield from config.get("endpoints", [])
-    for purpose_config in config.get("purposes", {}).values():
+    yield from config.get("models") or []
+    yield from config.get("endpoints") or []
+    for purpose_config in (config.get("purposes") or {}).values():
+        purpose_config = purpose_config or {}
         if purpose_config.get("model"):
             yield purpose_config["model"]
-        yield from purpose_config.get("models", [])
-        yield from purpose_config.get("endpoints", [])
+        yield from purpose_config.get("models") or []
+        yield from purpose_config.get("endpoints") or []
 
 
 class ModelLookup:
@@ -28,17 +31,17 @@ class ModelLookup:
         self.purpose = purpose
         self.aliases = llm.get_async_model_aliases()
         self.purpose_config = (
-            config.get("purposes", {}).get(purpose, {}) if purpose else {}
+            ((config.get("purposes") or {}).get(purpose) or {}) if purpose else {}
         )
         pc = self.purpose_config
-        raw_refs = list(pc.get("models", []))
+        raw_refs = list(pc.get("models") or [])
         if pc.get("model"):
             raw_refs.append(pc["model"])
-        raw_refs.extend(pc.get("endpoints", []))
+        raw_refs.extend(pc.get("endpoints") or [])
         if config.get("default_model"):
             raw_refs.append(config["default_model"])
-        raw_refs.extend(config.get("models", []))
-        raw_refs.extend(config.get("endpoints", []))
+        raw_refs.extend(config.get("models") or [])
+        raw_refs.extend(config.get("endpoints") or [])
         self.refs = [ModelReference.parse(ref) for ref in raw_refs]
         if inline_ref:
             self.refs.insert(0, inline_ref)
@@ -118,16 +121,20 @@ class ModelLookup:
             if config.get("default_model"):
                 allowed_ids.add(self.ref_id(config["default_model"]))
             models = [model for model in models if model.model_id in allowed_ids]
-        blocked = {self.canonical_id(name) for name in config.get("blocked_models", [])}
-        blocked.update(self.canonical_id(name) for name in pc.get("blocked_models", []))
+        blocked = {
+            self.canonical_id(name) for name in config.get("blocked_models") or []
+        }
+        blocked.update(
+            self.canonical_id(name) for name in pc.get("blocked_models") or []
+        )
         return [model for model in models if model.model_id not in blocked]
 
     def sort(self, models):
         default = self.purpose_config.get("model") or self.config.get("default_model")
         default_id = self.ref_id(default) if default else self.llm_default_id()
         ids = [default_id]
-        ids.extend(self.ref_id(ref) for ref in self.purpose_config.get("models", []))
-        ids.extend(self.ref_id(ref) for ref in self.config.get("models", []))
+        ids.extend(self.ref_id(ref) for ref in self.purpose_config.get("models") or [])
+        ids.extend(self.ref_id(ref) for ref in self.config.get("models") or [])
         ids.extend(model.model_id for model in models)
         by_id = {model.model_id: model for model in models}
         result = []
